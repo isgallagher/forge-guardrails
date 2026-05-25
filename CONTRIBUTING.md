@@ -5,8 +5,8 @@ Thanks for your interest in contributing. This guide covers how to get set up, r
 ## Setup
 
 ```bash
-git clone https://github.com/antoinezambelli/forge.git
-cd forge
+git clone https://github.com/isgallagher/forge-guardrails.git
+cd forge-guardrails
 python -m venv .venv
 pip install -e ".[dev]"
 ```
