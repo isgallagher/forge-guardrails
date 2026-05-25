@@ -28,10 +28,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/antoinezambelli/forge"
-Repository = "https://github.com/antoinezambelli/forge"
-Documentation = "https://github.com/antoinezambelli/forge/tree/main/docs"
-Changelog = "https://github.com/antoinezambelli/forge/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/isgallagher/forge-guardrails"
+Repository = "https://github.com/isgallagher/forge-guardrails"
+Documentation = "https://github.com/isgallagher/forge-guardrails/tree/main/docs"
+Changelog = "https://github.com/isgallagher/forge-guardrails/blob/main/CHANGELOG.md"
 
 [project.scripts]
 forge-proxy = "forge.proxy.__main__:main"

@@ -21,9 +21,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM python:3.13-alpine3.23
 LABEL org.opencontainers.image.title="Forge Proxy" \
     org.opencontainers.image.description="A reliability layer for self-hosted LLM tool-calling" \
-    org.opencontainers.image.url="https://github.com/antoinezambelli/forge" \
-    org.opencontainers.image.source="https://github.com/antoinezambelli/forge" \
-    org.opencontainers.image.vendor="Antoine Zambelli" \
+    org.opencontainers.image.url="https://github.com/isgallagher/forge-guardrails" \
+    org.opencontainers.image.source="https://github.com/isgallagher/forge-guardrails" \
+    org.opencontainers.image.vendor="Ian Gallagher" \
     org.opencontainers.image.licenses="MIT"
 ENV PYTHONUNBUFFERED=1
 
@@ -48,4 +48,4 @@ HEALTHCHECK \
 
 EXPOSE 8081
 
-ENTRYPOINT ["forge-proxy", "--host", "0.0.0.0", "--port", "8081"]
+ENTRYPOINT ["forge-proxy"]

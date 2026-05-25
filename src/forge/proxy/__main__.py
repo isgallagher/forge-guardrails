@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import time
@@ -20,37 +21,43 @@ def main() -> None:
     # Mode selection
     parser.add_argument(
         "--backend-url",
-        help="URL of externally managed backend (external mode), or Anthropic-compatible endpoint with --backend anthropic",
+        default=os.environ.get("BACKEND_URL"),
+        help="URL of externally managed backend (external mode), or Anthropic-compatible endpoint with --backend anthropic. Env: BACKEND_URL",
     )
     parser.add_argument(
         "--backend",
         choices=["llamaserver", "llamafile", "ollama", "anthropic"],
-        help="Backend type (managed mode)",
+        default=os.environ.get("BACKEND"),
+        help="Backend type (managed mode). Env: BACKEND",
     )
-    if not any(arg in sys.argv for arg in ("--backend-url", "--backend")):
-        parser.error("Provide either --backend-url or --backend")
 
     # Managed mode options
-    parser.add_argument("--model", help="Model name (required for ollama)")
-    parser.add_argument("--gguf", help="Path to GGUF file (llamaserver/llamafile)")
-    parser.add_argument("--backend-port", type=int, default=8080, help="Backend port (default: 8080)")
+    parser.add_argument("--model", default=os.environ.get("MODEL"), help="Model name (required for ollama). Env: MODEL")
+    parser.add_argument("--gguf", default=os.environ.get("GGUF"), help="Path to GGUF file (llamaserver/llamafile). Env: GGUF")
+    parser.add_argument("--backend-port", type=int, default=int(os.environ.get("BACKEND_PORT", "8080")), help="Backend port (default: 8080). Env: BACKEND_PORT")
     parser.add_argument(
         "--budget-mode",
         choices=["backend", "manual", "forge-full", "forge-fast"],
-        default="backend",
-        help="Context budget mode (default: backend)",
+        default=os.environ.get("BUDGET_MODE", "backend"),
+        help="Context budget mode (default: backend). Env: BUDGET_MODE",
     )
-    parser.add_argument("--budget-tokens", type=int, help="Manual token budget")
-    parser.add_argument("--extra-flags", nargs="*", help="Additional backend CLI flags")
+    parser.add_argument("--budget-tokens", type=int, default=os.environ.get("BUDGET_TOKENS", None), help="Manual token budget. Env: BUDGET_TOKENS")
+    parser.add_argument("--extra-flags", nargs="*", default=os.environ.get("EXTRA_FLAGS").split() if os.environ.get("EXTRA_FLAGS") else None, help="Additional backend CLI flags. Env: EXTRA_FLAGS")
 
     # Proxy options
-    parser.add_argument("--host", default="127.0.0.1", help="Proxy listen host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8081, help="Proxy listen port (default: 8081)")
-    parser.add_argument("--serialize", action="store_true", default=None, help="Force request serialization")
+    parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"), help="Proxy listen host (default: 127.0.0.1). Env: HOST")
+    parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8081")), help="Proxy listen port (default: 8081). Env: PORT")
+    parser.add_argument("--serialize", action="store_true", default=None, help="Force request serialization. Env: SERIALIZE")
     parser.add_argument("--no-serialize", action="store_true", help="Disable request serialization")
-    parser.add_argument("--max-retries", type=int, default=3, help="Max retries per request (default: 3)")
-    parser.add_argument("--no-rescue", action="store_true", help="Disable rescue parsing")
-    parser.add_argument("--verbose", "-v", action="store_true", help="Verbose logging")
+    parser.add_argument("--max-retries", type=int, default=int(os.environ.get("MAX_RETRIES", "3")), help="Max retries per request (default: 3). Env: MAX_RETRIES")
+    parser.add_argument("--no-rescue", action="store_true", default=os.environ.get("RESCUE", "true").lower() == "false", help="Disable rescue parsing. Env: RESCUE (set to 'false' to disable)")
+    parser.add_argument("--verbose", "-v", action="store_true", default=os.environ.get("VERBOSE", "").lower() in ("1", "true"), help="Verbose logging. Env: VERBOSE")
+
+    args = parser.parse_args()
+
+    # Validate backend mode (allow both None for env-var-only usage)
+    if not args.backend_url and not args.backend:
+        parser.error("Provide either --backend-url / BACKEND_URL or --backend / BACKEND")
 
     args = parser.parse_args()
 

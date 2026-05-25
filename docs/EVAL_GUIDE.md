@@ -221,7 +221,7 @@ python -m tests.eval.report eval_results.jsonl --html docs/results/dashboard.htm
 
 ## BFCL Benchmark (removed)
 
-Forge previously included a [Berkeley Function Calling Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) v4 integration (11 categories, ~2,183 entries). It was removed in favor of forge's own eval harness, which measures multi-step workflow completion rather than single-call argument matching. Last commit with BFCL code: [`a9b0257`](https://github.com/antoinezambelli/forge/commit/a9b0257).
+Forge previously included a [Berkeley Function Calling Leaderboard](https://github.com/ShishirPatil/gorilla/tree/main/berkeley-function-call-leaderboard) v4 integration (11 categories, ~2,183 entries). It was removed in favor of forge's own eval harness, which measures multi-step workflow completion rather than single-call argument matching. Last commit with BFCL code: [`a9b0257`](https://github.com/isgallagher/forge-guardrails/commit/a9b0257).
 
 ---
 
