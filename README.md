@@ -1,8 +1,8 @@
 # forge
 
 [![PyPI](https://img.shields.io/pypi/v/forge-guardrails.svg)](https://pypi.org/project/forge-guardrails/)
-[![Tests](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml/badge.svg)](https://github.com/antoinezambelli/forge/actions/workflows/tests.yml)
-[![codecov](https://codecov.io/gh/antoinezambelli/forge/branch/main/graph/badge.svg)](https://codecov.io/gh/antoinezambelli/forge)
+[![Tests](https://github.com/isgallagher/forge-guardrails/actions/workflows/tests.yml/badge.svg)](https://github.com/isgallagher/forge-guardrails/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/isgallagher/forge-guardrails/branch/main/graph/badge.svg)](https://codecov.io/gh/isgallagher/forge-guardrails)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -39,7 +39,7 @@ pip install "forge-guardrails[anthropic]"   # + Anthropic client
 For development:
 
 ```bash
-git clone https://github.com/antoinezambelli/forge.git
+git clone https://github.com/isgallagher/forge-guardrails.git
 cd forge
 pip install -e ".[dev]"
 ```
@@ -176,20 +176,47 @@ For the full guardrail surface, use `WorkflowRunner` directly. The proxy trades 
 
 ### Docker
 
-You can run the forge proxy as a Docker container.
+You can run the forge proxy as a Docker container. All proxy options are configurable via environment variables.
 
-**Build the image:**
+**Pull the image:**
+
+```bash
+docker pull ghcr.io/isgallagher/forge-guardrails:main
+```
+
+**Or build locally:**
 
 ```bash
 docker build -t forge-proxy .
 ```
 
-**Run the container:**
+**Run the container (via environment variables):**
 
 ```bash
-# Connect to an external backend (e.g. vLLM hosted on the same machine)
-docker run -p 8081:8081 forge-proxy --backend-url http://host.docker.internal:8000 --budget-mode manual --budget-tokens 8192
+docker run -p 8081:8081 \
+  -e BACKEND_URL=http://host.docker.internal:8000 \
+  -e BUDGET_MODE=manual \
+  -e BUDGET_TOKENS=8192 \
+  ghcr.io/isgallagher/forge-guardrails:main
 ```
+
+**Available environment variables:**
+
+| Variable | Default | Description |
+|---|---|---|
+| `BACKEND_URL` | — | External backend URL (or use `BACKEND` for managed mode) |
+| `BACKEND` | — | Managed backend: `llamaserver`, `llamafile`, `ollama`, `anthropic` |
+| `MODEL` | — | Model name (required for `ollama`) |
+| `GGUF` | — | Path to GGUF file (`llamaserver`/`llamafile`) |
+| `BACKEND_PORT` | `8080` | Backend listen port |
+| `BUDGET_MODE` | `backend` | `backend`, `manual`, `forge-full`, `forge-fast` |
+| `BUDGET_TOKENS` | — | Manual token budget (requires `BUDGET_MODE=manual`) |
+| `HOST` | `127.0.0.1` | Proxy bind host (use `0.0.0.0` in containers) |
+| `PORT` | `8081` | Proxy listen port |
+| `MAX_RETRIES` | `3` | Retry budget per validation failure |
+| `RESCUE` | `true` | Set to `false` to disable rescue parsing |
+| `SERIALIZE` | — | Set to `true` to force request serialization |
+| `VERBOSE` | `false` | Set to `true` for debug logging |
 
 Note: If your backend is running on `localhost` of the host machine, use `http://host.docker.internal:PORT` (on macOS/Windows) or the host's IP address to allow the container to reach it.
 
