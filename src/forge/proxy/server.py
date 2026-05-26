@@ -56,11 +56,13 @@ class HTTPServer:
         self._anthropic_backend = anthropic_backend
         self._server: asyncio.Server | None = None
         self._serialize = serialize_requests
-        self._queue: asyncio.Queue[_QueueItem] = asyncio.Queue()
+        self._queue: asyncio.Queue[_QueueItem | None] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
+        self._shutdown_event: asyncio.Event | None = None
 
     async def start(self) -> None:
         """Start listening for connections."""
+        self._shutdown_event = asyncio.Event()
         if self._serialize:
             self._worker_task = asyncio.create_task(self._inference_worker())
         self._server = await asyncio.start_server(
@@ -71,27 +73,42 @@ class HTTPServer:
         logger.info("Proxy listening on %s:%d", self._host, self._port)
 
     async def stop(self) -> None:
-        """Stop the server."""
-        if self._worker_task is not None:
-            self._worker_task.cancel()
-            try:
-                await self._worker_task
-            except asyncio.CancelledError:
-                pass
-            self._worker_task = None
+        """Stop the server gracefully."""
+        # 1. Signal shutdown to all components
+        if self._shutdown_event is not None:
+            self._shutdown_event.set()
+
+        # 2. Stop accepting new connections
         if self._server is not None:
             self._server.close()
             await self._server.wait_closed()
             self._server = None
 
+        # 3. Unblock worker with sentinel (works even if worker is blocked on queue.get)
+        if self._serialize:
+            self._queue.put_nowait(None)
+
+        # 4. Cancel and await worker
+        if self._worker_task is not None:
+            self._worker_task.cancel()
+            try:
+                await asyncio.wait_for(self._worker_task, timeout=5)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
+            self._worker_task = None
+
     async def _inference_worker(self) -> None:
         """Single worker that pulls requests off the queue and processes them.
 
         Ensures only one inference runs at a time (single-GPU constraint).
+        Exits on sentinel (None) or cancellation.
         """
-        while True:
+        while self._shutdown_event is None or not self._shutdown_event.is_set():
             item = await self._queue.get()
             try:
+                # Sentinel value signals shutdown
+                if item is None:
+                    break
                 if item.cancelled or item.future.cancelled():
                     logger.info("   Skipping cancelled request")
                     continue
@@ -102,12 +119,14 @@ class HTTPServer:
                 if not item.future.done():
                     item.future.set_result(result)
             except asyncio.CancelledError:
+                self._queue.task_done()
                 raise
             except Exception as exc:
                 if not item.future.done():
                     item.future.set_result(exc)
             finally:
-                self._queue.task_done()
+                if item is not None:
+                    self._queue.task_done()
 
     async def _handle_connection(
         self,
@@ -355,18 +374,19 @@ class HTTPServer:
     ) -> dict[str, Any] | list[dict[str, Any]] | Exception | None:
         """Wait for a queued item's result, checking for client disconnect.
 
-        Returns None if the client disconnected.
+        Returns None if the client disconnected or server is shutting down.
         """
         while not item.future.done():
             if writer.is_closing():
                 item.cancelled = True
                 logger.info("   Client disconnected, cancelling queued request")
                 return None
+            # Exit early if server is shutting down
+            if self._shutdown_event is not None and self._shutdown_event.is_set():
+                logger.info("   Server shutting down, discarding in-flight result")
+                return None
             try:
-                await asyncio.wait_for(
-                    asyncio.shield(item.future),
-                    timeout=1.0,
-                )
+                await asyncio.wait_for(item.future, timeout=1.0)
             except TimeoutError:
                 continue
         return item.future.result()
