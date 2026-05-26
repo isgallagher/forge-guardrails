@@ -59,8 +59,6 @@ def main() -> None:
     if not args.backend_url and not args.backend:
         parser.error("Provide either --backend-url / BACKEND_URL or --backend / BACKEND")
 
-    args = parser.parse_args()
-
     # Logging
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
@@ -93,8 +91,11 @@ def main() -> None:
     )
 
     def _shutdown(sig: int, _frame: object) -> None:
-        print("\nShutting down...")
-        proxy.stop()
+        print("\nShutting down...", file=sys.stderr, flush=True)
+        try:
+            proxy.stop()
+        except Exception as e:
+            print(f"Stop error (ignored): {e}", file=sys.stderr, flush=True)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)
