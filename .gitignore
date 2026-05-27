@@ -34,6 +34,10 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 
+# Environment
+.env*
+!.env.example
+
 # External tools
 .opencode/
 opencode-panic-*.log

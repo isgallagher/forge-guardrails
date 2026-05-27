@@ -86,7 +86,7 @@ class OllamaClient:
     )
 
     def _build_options(
-        self, sampling: dict[str, Any] | None = None,
+        self, sampling: dict[str, Any] | None = None, max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Build the Ollama options dict.
 
@@ -104,6 +104,8 @@ class OllamaClient:
                 opts[field] = instance_val
         if self._num_ctx is not None:
             opts["num_ctx"] = self._num_ctx
+        if max_tokens is not None:
+            opts["num_predict"] = max_tokens
         return opts
 
     def _resolve_reasoning(
@@ -139,13 +141,14 @@ class OllamaClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Send messages via /api/chat and parse the response."""
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "options": self._build_options(sampling),
+            "options": self._build_options(sampling, max_tokens),
         }
         if self._think:
             body["think"] = True
@@ -198,13 +201,14 @@ class OllamaClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via NDJSON from /api/chat."""
         body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "stream": True,
-            "options": self._build_options(sampling),
+            "options": self._build_options(sampling, max_tokens),
         }
         if self._think:
             body["think"] = True

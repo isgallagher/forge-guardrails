@@ -76,6 +76,7 @@ class MockClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, object] | None = None,
+        **kwargs,
     ) -> AsyncIterator[StreamChunk]:
         self.send_stream_calls.append((messages, tools))
         resp = self._next()
@@ -851,7 +852,7 @@ class TestStreaming:
             async def send(self, messages, tools=None, sampling=None):
                 return [ToolCall(tool="fetch", args={})]
 
-            async def send_stream(self, messages, tools=None, sampling=None):
+            async def send_stream(self, messages, tools=None, sampling=None, **kwargs):
                 yield StreamChunk(type=ChunkType.TEXT_DELTA, content="partial")
 
             async def get_context_length(self):
