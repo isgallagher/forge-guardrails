@@ -28,7 +28,7 @@ class _QueueItem:
     """A request waiting to be processed by the inference worker."""
 
     body: dict[str, Any]
-    future: asyncio.Future = field(default_factory=lambda: asyncio.get_event_loop().create_future())
+    future: asyncio.Future = field(default_factory=lambda: asyncio.get_running_loop().create_future())
     cancelled: bool = False
     handler_func: Any = None
 
@@ -93,7 +93,7 @@ class HTTPServer:
             self._worker_task.cancel()
             try:
                 await asyncio.wait_for(self._worker_task, timeout=5)
-            except (asyncio.CancelledError, asyncio.TimeoutError):
+            except (asyncio.CancelledError, TimeoutError):
                 pass
             self._worker_task = None
 
@@ -119,8 +119,7 @@ class HTTPServer:
                 if not item.future.done():
                     item.future.set_result(result)
             except asyncio.CancelledError:
-                self._queue.task_done()
-                raise
+                raise  # finally will call task_done()
             except Exception as exc:
                 if not item.future.done():
                     item.future.set_result(exc)
@@ -385,10 +384,13 @@ class HTTPServer:
             if self._shutdown_event is not None and self._shutdown_event.is_set():
                 logger.info("   Server shutting down, discarding in-flight result")
                 return None
-            try:
-                await asyncio.wait_for(item.future, timeout=1.0)
-            except TimeoutError:
-                continue
+            done, _ = await asyncio.wait(
+                [item.future],
+                timeout=1.0,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if done:
+                break
         return item.future.result()
 
     async def _run_handler(

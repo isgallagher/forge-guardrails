@@ -84,6 +84,7 @@ class LLMClient(Protocol):
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Send messages and return a parsed response.
 
@@ -101,6 +102,7 @@ class LLMClient(Protocol):
                 ``repeat_penalty``, ``presence_penalty``, ``seed``).
                 Per-call values win over instance state for this call only;
                 the client's instance fields are not mutated.
+            max_tokens: Optional token limit for the response.
         """
         ...
 
@@ -109,6 +111,7 @@ class LLMClient(Protocol):
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Send messages and yield streaming chunks.
 
@@ -124,6 +127,7 @@ class LLMClient(Protocol):
             tools: Tool specs to include with the request.
             sampling: Optional per-call sampling overrides (see ``send``).
                 Per-call values win over instance state without mutating self.
+            max_tokens: Optional token limit for the response.
         """
         ...
 
