@@ -264,26 +264,28 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Resolve mode on first call with tools, then dispatch."""
         if self.resolved_mode is None:
-            return await self._resolve_and_send(messages, tools, sampling)
+            return await self._resolve_and_send(messages, tools, sampling, max_tokens)
         elif self.resolved_mode == "native":
-            return await self._send_native(messages, tools, sampling)
+            return await self._send_native(messages, tools, sampling, max_tokens)
         else:
-            return await self._send_prompt(messages, tools, sampling)
+            return await self._send_prompt(messages, tools, sampling, max_tokens)
 
     async def send_stream(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None = None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Stream via SSE, handling both native FC and prompt-injected paths."""
         if self.resolved_mode is None:
             # Probe with a non-streaming call to resolve native vs prompt.
             # Result is discarded — the runner will use the streamed response.
-            await self._resolve_and_send(messages, tools, sampling)
+            await self._resolve_and_send(messages, tools, sampling, max_tokens)
         mode = self.resolved_mode
 
         model_name = (sampling or {}).get("model") or self.model
@@ -295,6 +297,8 @@ class LlamafileClient:
         }
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
 
         if mode == "native":
             prepared = _merge_consecutive(messages)
@@ -439,6 +443,7 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Auto-resolve mode on first send with tools.
 
@@ -451,21 +456,22 @@ class LlamafileClient:
         if not tools:
             # No tools to test with — send without tools, defer resolution
             self.resolved_mode = "native"
-            return await self._send_native(messages, tools, sampling)
+            return await self._send_native(messages, tools, sampling, max_tokens)
 
         try:
-            result = await self._send_native(messages, tools, sampling)
+            result = await self._send_native(messages, tools, sampling, max_tokens)
             self.resolved_mode = "native"
             return result
         except (httpx.HTTPStatusError, BackendError):
             self.resolved_mode = "prompt"
-            return await self._send_prompt(messages, tools, sampling)
+            return await self._send_prompt(messages, tools, sampling, max_tokens)
 
     async def _send_native(
         self,
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Send using native function calling (OpenAI tools parameter)."""
         merged = _merge_consecutive(messages)
@@ -477,6 +483,8 @@ class LlamafileClient:
         }
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
         if tools:
             body["tools"] = [format_tool(t) for t in tools]
 
@@ -526,6 +534,7 @@ class LlamafileClient:
         messages: list[dict[str, str]],
         tools: list[ToolSpec] | None,
         sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
     ) -> LLMResponse:
         """Send using prompt-injected tool calling."""
         prepared = _merge_consecutive(_downgrade_messages(messages))
@@ -544,6 +553,8 @@ class LlamafileClient:
         }
         self._apply_slot_id(body)
         self._apply_sampling(body, sampling)
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
 
         resp = await self._http.post(
             f"{self.base_url}/chat/completions", json=body

@@ -141,10 +141,13 @@ class ProxyServer:
         if not self._started or self._loop is None:
             return
 
-        asyncio.run_coroutine_threadsafe(self._async_stop(), self._loop).result(timeout=30)
+        try:
+            asyncio.run_coroutine_threadsafe(self._async_stop(), self._loop).result(timeout=10)
+        except Exception as e:
+            logger.debug("Async stop error (ignored during shutdown): %s", e)
         self._loop.call_soon_threadsafe(self._loop.stop)
         if self._thread is not None:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=5)
         self._started = False
         logger.info("Proxy stopped")
 

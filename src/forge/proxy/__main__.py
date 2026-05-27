@@ -13,9 +13,48 @@ from forge.proxy.proxy import ProxyServer
 from forge.server import BudgetMode
 
 
+def _load_env_file(path: str) -> None:
+    """Parse a .env file and set vars via os.environ.setdefault().
+
+    Handles KEY=value, KEY="value", KEY='value', comments, blanks.
+    Uses setdefault() so existing env vars take priority.
+    """
+    env_path = os.path.expanduser(path)
+    if not os.path.isfile(env_path):
+        return
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            k = k.strip()
+            v = v.strip().strip("\"'")
+            os.environ.setdefault(k, v)
+
+
 def main() -> None:
+    # Load .env file before parse_args() so os.environ.get() defaults work.
+    # Check ENV_FILE env var, then scan sys.argv for --env-file.
+    _env_file = os.environ.get("ENV_FILE")
+    if not _env_file:
+        try:
+            idx = sys.argv.index("--env-file")
+            _env_file = sys.argv[idx + 1]
+        except (ValueError, IndexError):
+            pass
+    if _env_file:
+        _load_env_file(_env_file)
+
     parser = argparse.ArgumentParser(
         description="forge proxy — OpenAI-compatible proxy with guardrails",
+    )
+    parser.add_argument(
+        "--env-file",
+        default=None,
+        help="Path to .env file to load (env: ENV_FILE). Uses setdefault() so existing vars win.",
     )
 
     # Mode selection
@@ -59,8 +98,6 @@ def main() -> None:
     if not args.backend_url and not args.backend:
         parser.error("Provide either --backend-url / BACKEND_URL or --backend / BACKEND")
 
-    args = parser.parse_args()
-
     # Logging
     level = logging.DEBUG if args.verbose else logging.INFO
     logging.basicConfig(
@@ -93,8 +130,11 @@ def main() -> None:
     )
 
     def _shutdown(sig: int, _frame: object) -> None:
-        print("\nShutting down...")
-        proxy.stop()
+        print("\nShutting down...", file=sys.stderr, flush=True)
+        try:
+            proxy.stop()
+        except Exception as e:
+            print(f"Stop error (ignored): {e}", file=sys.stderr, flush=True)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, _shutdown)

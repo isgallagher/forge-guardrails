@@ -2,15 +2,27 @@
 mock backend, sends one request, verifies the response.
 
 Usage: python scripts/smoke_test_proxy.py
+       (loads .env.dev for BACKEND_URL, BACKEND, MODEL, ANTHROPIC_API_KEY)
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 
 import httpx
+
+# Load .env.dev if available
+_env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env.dev")
+if os.path.exists(_env_path):
+    with open(_env_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip('"'))
 
 
 async def mock_backend(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
@@ -234,5 +246,89 @@ async def main() -> None:
     await mock_server.wait_closed()
 
 
+async def main_live() -> None:
+    """Test against a running proxy using .env.dev config."""
+    proxy_url = os.environ.get("PROXY_URL", "http://127.0.0.1:8081")
+    backend_url = os.environ.get("BACKEND_URL")
+    backend = os.environ.get("BACKEND", "anthropic")
+    model = os.environ.get("MODEL", "qwen3.6-27b")
+
+    print(f"[config] Proxy: {proxy_url}")
+    print(f"[config] Backend: {backend} at {backend_url}")
+    print(f"[config] Model: {model}")
+    print()
+
+    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        # Test health
+        try:
+            health = await client.get(f"{proxy_url}/health")
+            print(f"[test] Health: {health.status_code} — {health.text}")
+        except Exception as e:
+            print(f"[FAIL] Health check: {e}")
+            sys.exit(1)
+
+        # Determine endpoint based on backend type
+        if backend == "anthropic":
+            endpoint = f"{proxy_url}/v1/messages"
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": "Say hello in three words."},
+                ],
+                "max_tokens": 50,
+                "stream": False,
+            }
+        else:
+            endpoint = f"{proxy_url}/v1/chat/completions"
+            payload = {
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": "Say hello in three words."},
+                ],
+                "max_tokens": 50,
+                "stream": False,
+            }
+
+        # Test non-streaming
+        try:
+            print(f"[test] POST {endpoint}")
+            resp = await client.post(endpoint, json=payload)
+            print(f"[test] Status: {resp.status_code}")
+            if resp.status_code == 200:
+                data = resp.json()
+                if backend == "anthropic":
+                    content = data.get("content", [{}])[0].get("text", "(no content)")
+                else:
+                    content = data["choices"][0]["message"].get("content", "(no content)")
+                print(f"[test] Response: {content[:200]}")
+            else:
+                print(f"[test] Error body: {resp.text[:300]}")
+        except Exception as e:
+            print(f"[FAIL] Chat request: {type(e).__name__}: {e}")
+            sys.exit(1)
+
+        # Test streaming
+        try:
+            payload["stream"] = True
+            print(f"[test] POST {endpoint} (streaming)")
+            resp = await client.post(endpoint, json=payload)
+            print(f"[test] Status: {resp.status_code}")
+            body = resp.text
+            lines = [l for l in body.split("\n") if l.startswith("data: ")]
+            print(f"[test] SSE events: {len(lines)}")
+            if "[DONE]" in body:
+                print("[test] Got [DONE] terminator")
+            else:
+                print(f"[test] Body tail: {body[-200:]}")
+        except Exception as e:
+            print(f"[FAIL] Streaming request: {type(e).__name__}: {e}")
+            sys.exit(1)
+
+    print("\n[PASS] Live smoke tests passed!")
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    if len(sys.argv) > 1 and sys.argv[1] == "--live":
+        asyncio.run(main_live())
+    else:
+        asyncio.run(main())
