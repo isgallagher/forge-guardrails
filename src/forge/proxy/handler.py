@@ -182,7 +182,7 @@ async def handle_chat_completions(
     # No tools → plain chat completion, no guardrails needed.
     # Forward to backend and return the response directly.
     if not tool_specs:
-        logger.info("No tools in request, passing through to backend")
+        logger.debug("No tools in request, passing through to backend")
         api_format = getattr(client, "api_format", "ollama")
         api_messages = fold_and_serialize(messages, api_format)
         response = await client.send(api_messages, tools=None, sampling=sampling, max_tokens=max_tokens)
@@ -220,7 +220,7 @@ async def handle_chat_completions(
         return _format_response("", is_stream, model_name, anthropic_backend)
 
     tool_calls = result.response
-    logger.info("Model returned %d tool call(s): %s", len(tool_calls), [tc.tool for tc in tool_calls])
+    logger.debug("Model returned %d tool call(s): %s", len(tool_calls), [tc.tool for tc in tool_calls])
 
     # Strip respond() calls — convert to plain text for the client.
     # If the model called respond(message="..."), the client sees a
@@ -231,7 +231,7 @@ async def handle_chat_completions(
     if respond_calls and not other_calls:
         # Pure respond — convert to text
         text = respond_calls[0].args.get("message", "")
-        logger.info("Stripping respond() call, returning as text")
+        logger.debug("Stripping respond() call, returning as text")
         return _format_response(text, is_stream, model_name, anthropic_backend)
 
     if other_calls:

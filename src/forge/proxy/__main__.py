@@ -90,7 +90,18 @@ def main() -> None:
     parser.add_argument("--no-serialize", action="store_true", help="Disable request serialization")
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("MAX_RETRIES", "3")), help="Max retries per request (default: 3). Env: MAX_RETRIES")
     parser.add_argument("--no-rescue", action="store_true", default=os.environ.get("RESCUE", "true").lower() == "false", help="Disable rescue parsing. Env: RESCUE (set to 'false' to disable)")
-    parser.add_argument("--verbose", "-v", action="store_true", default=os.environ.get("VERBOSE", "").lower() in ("1", "true"), help="Verbose logging. Env: VERBOSE")
+    parser.add_argument(
+        "--log-level",
+        default=os.environ.get("LOG_LEVEL", "INFO"),
+        type=lambda v: v.upper(),
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Logging level (default: INFO). Env: LOG_LEVEL",
+    )
+    parser.add_argument(
+        "--verbose", "-v", action="store_true",
+        default=os.environ.get("VERBOSE", "").lower() in ("1", "true"),
+        help="Verbose logging (shortcut for --log-level DEBUG). Env: VERBOSE",
+    )
 
     args = parser.parse_args()
 
@@ -98,8 +109,11 @@ def main() -> None:
     if not args.backend_url and not args.backend:
         parser.error("Provide either --backend-url / BACKEND_URL or --backend / BACKEND")
 
-    # Logging
-    level = logging.DEBUG if args.verbose else logging.INFO
+    # Logging — verbose overrides LOG_LEVEL
+    if args.verbose:
+        level = logging.DEBUG
+    else:
+        level = getattr(logging, args.log_level, logging.INFO)
     logging.basicConfig(
         level=level,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",

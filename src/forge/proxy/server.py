@@ -121,7 +121,7 @@ class HTTPServer:
                 if item is None:
                     break
                 if item.cancelled or item.future.cancelled():
-                    logger.info("   Skipping cancelled request")
+                    logger.debug("   Skipping cancelled request")
                     continue
                 if item.handler_func is not None:
                     result = await item.handler_func(item.body)
@@ -161,7 +161,7 @@ class HTTPServer:
 
             method, path = parts[0], parts[1]
             pure_path = path.split("?")[0]
-            logger.info(">> %s %s", method, path)
+            logger.debug(">> %s %s", method, path)
 
             # Read headers
             headers = await self._read_headers(reader)
@@ -374,7 +374,7 @@ class HTTPServer:
         is_stream = body.get("stream", False)
         msg_count = len(body.get("messages", []))
         tool_count = len(body.get("tools", []))
-        logger.info(
+        logger.debug(
             "   stream=%s messages=%d tools=%d model=%s",
             is_stream,
             msg_count,
@@ -387,7 +387,7 @@ class HTTPServer:
             item = _QueueItem(body=body)
             queue_depth = self._queue.qsize()
             if queue_depth > 0:
-                logger.info("   Queued (depth=%d)", queue_depth + 1)
+                logger.debug("   Queued (depth=%d)", queue_depth + 1)
 
             # For streaming requests, send SSE headers immediately so the
             # client knows we're alive while waiting in the queue
@@ -405,12 +405,12 @@ class HTTPServer:
 
         if result is None:
             # Client disconnected
-            logger.info("<< Client disconnected, discarding result")
+            logger.debug("<< Client disconnected, discarding result")
             return
 
         if isinstance(result, Exception):
             error_msg = str(result)
-            logger.info("<< ERROR: %s", error_msg[:120])
+            logger.debug("<< ERROR: %s", error_msg[:120])
             if is_stream:
                 await self._send_sse_body(writer, [{"error": error_msg}])
             else:
@@ -418,10 +418,10 @@ class HTTPServer:
             return
 
         if is_stream:
-            logger.info("<< SSE %d events", len(result))
+            logger.debug("<< SSE %d events", len(result))
             await self._send_sse_body(writer, result)
         else:
-            logger.info("<< JSON 200")
+            logger.debug("<< JSON 200")
             await self._send_json(writer, 200, json.dumps(result))
 
     async def _handle_messages(
@@ -439,7 +439,7 @@ class HTTPServer:
         is_stream = body.get("stream", False)
         msg_count = len(body.get("messages", []))
         tool_count = len(body.get("tools", []))
-        logger.info(
+        logger.debug(
             "   [anthropic] stream=%s messages=%d tools=%d model=%s",
             is_stream,
             msg_count,
@@ -451,7 +451,7 @@ class HTTPServer:
             item = _QueueItem(body=body, handler_func=self._run_anthropic_handler)
             queue_depth = self._queue.qsize()
             if queue_depth > 0:
-                logger.info("   Queued (depth=%d)", queue_depth + 1)
+                logger.debug("   Queued (depth=%d)", queue_depth + 1)
 
             if is_stream:
                 await self._send_sse_header(writer)
@@ -464,12 +464,12 @@ class HTTPServer:
             result = await self._run_anthropic_handler(body)
 
         if result is None:
-            logger.info("<< Client disconnected, discarding result")
+            logger.debug("<< Client disconnected, discarding result")
             return
 
         if isinstance(result, Exception):
             error_msg = str(result)
-            logger.info("<< ERROR: %s", error_msg[:120])
+            logger.debug("<< ERROR: %s", error_msg[:120])
             if is_stream:
                 await self._send_sse_body(writer, [{"error": error_msg}])
             else:
@@ -477,10 +477,10 @@ class HTTPServer:
             return
 
         if is_stream:
-            logger.info("<< SSE %d events", len(result))
+            logger.debug("<< SSE %d events", len(result))
             await self._send_sse_body(writer, result)
         else:
-            logger.info("<< JSON 200")
+            logger.debug("<< JSON 200")
             await self._send_json(writer, 200, json.dumps(result))
 
     async def _run_anthropic_handler(
@@ -513,11 +513,11 @@ class HTTPServer:
         while not item.future.done():
             if writer.is_closing():
                 item.cancelled = True
-                logger.info("   Client disconnected, cancelling queued request")
+                logger.debug("   Client disconnected, cancelling queued request")
                 return None
             # Exit early if server is shutting down
             if self._shutdown_event is not None and self._shutdown_event.is_set():
-                logger.info("   Server shutting down, discarding in-flight result")
+                logger.debug("   Server shutting down, discarding in-flight result")
                 return None
             done, _ = await asyncio.wait(
                 [item.future],
@@ -600,7 +600,7 @@ class HTTPServer:
         # Terminating zero-length chunk
         writer.write(b"0\r\n\r\n")
         await writer.drain()
-        logger.info("<< SSE complete, [DONE] sent")
+        logger.debug("<< SSE complete, [DONE] sent")
 
     async def _send_error(
         self,
