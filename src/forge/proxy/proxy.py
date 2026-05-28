@@ -246,7 +246,6 @@ class ProxyServer:
             serialize_requests=self._serialize,
             max_retries=self._max_retries,
             rescue_enabled=self._rescue_enabled,
-            anthropic_backend=self._backend == "anthropic",
         )
         await self._http_server.start()
         self._started = True

@@ -79,6 +79,12 @@ class LLMClient(Protocol):
     api_format: str
     """Wire format for Message.to_api_dict(): 'ollama' or 'openai'."""
 
+    backend_url: str | None
+    """Base URL of the backend, for models-endpoint passthrough."""
+
+    _models_format: str
+    """Native models endpoint format: 'anthropic', 'openai', or 'ollama'."""
+
     async def send(
         self,
         messages: list[dict[str, str]],
