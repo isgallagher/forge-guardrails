@@ -263,7 +263,7 @@ class TestServerAnthropicEndpoint:
 
     @pytest.fixture
     async def anthropic_server_factory(self):
-        """Factory that creates an HTTPServer with anthropic_backend=True."""
+        """Factory that creates an HTTPServer on a random port."""
         servers = []
 
         async def _make(response, serialize=False):
@@ -275,7 +275,6 @@ class TestServerAnthropicEndpoint:
                 host="127.0.0.1",
                 port=0,
                 serialize_requests=serialize,
-                anthropic_backend=True,
             )
             await srv.start()
             sock = srv._server.sockets[0]

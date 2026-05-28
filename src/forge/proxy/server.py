@@ -13,9 +13,17 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
+
 from forge.clients.base import LLMClient
 from forge.context.manager import ContextManager
 from forge.proxy.handler import handle_chat_completions, handle_messages
+from forge.proxy.convert import (
+    anthropic_models_to_openai,
+    openai_models_to_anthropic,
+    ollama_models_to_anthropic,
+    ollama_models_to_openai,
+)
 
 logger = logging.getLogger("forge.proxy")
 
@@ -45,7 +53,6 @@ class HTTPServer:
         serialize_requests: bool = True,
         max_retries: int = 3,
         rescue_enabled: bool = True,
-        anthropic_backend: bool = False,
     ) -> None:
         self._client = client
         self._context_manager = context_manager
@@ -53,12 +60,13 @@ class HTTPServer:
         self._port = port
         self._max_retries = max_retries
         self._rescue_enabled = rescue_enabled
-        self._anthropic_backend = anthropic_backend
         self._server: asyncio.Server | None = None
         self._serialize = serialize_requests
         self._queue: asyncio.Queue[_QueueItem | None] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._shutdown_event: asyncio.Event | None = None
+        self._models_cache: dict[bool, bool] = {}
+        self._http = httpx.AsyncClient(timeout=10.0)
 
     async def start(self) -> None:
         """Start listening for connections."""
@@ -96,6 +104,9 @@ class HTTPServer:
             except (asyncio.CancelledError, TimeoutError):
                 pass
             self._worker_task = None
+
+        # 5. Close HTTP client used for models endpoint
+        await self._http.aclose()
 
     async def _inference_worker(self) -> None:
         """Single worker that pulls requests off the queue and processes them.
@@ -171,7 +182,7 @@ class HTTPServer:
             if method == "GET" and pure_path == "/health":
                 await self._handle_health(writer)
             elif method == "GET" and pure_path == "/v1/models":
-                await self._handle_models(writer)
+                await self._handle_models(writer, headers)
             elif method == "POST" and pure_path == "/v1/chat/completions":
                 await self._handle_completions(writer, body_bytes)
             elif method == "POST" and pure_path == "/v1/messages":
@@ -214,15 +225,139 @@ class HTTPServer:
         body = json.dumps({"status": "ok"})
         await self._send_json(writer, 200, body)
 
-    async def _handle_models(self, writer: asyncio.StreamWriter) -> None:
-        """GET /v1/models — returns a minimal model list."""
-        body = json.dumps(
-            {
+    async def _handle_models(self, writer: asyncio.StreamWriter, headers: dict[str, str]) -> None:
+        """GET /v1/models — probes backend, caches result, converts format."""
+        want_anthropic = "anthropic-version" in headers
+
+        # Access client attributes via getattr for safety with mocks
+        backend_url = getattr(self._client, "backend_url", None)
+        native_format = getattr(self._client, "_models_format", None)
+
+        if not backend_url or not native_format:
+            # Fallback: return hardcoded forge model list
+            body = json.dumps({
                 "object": "list",
                 "data": [{"id": "forge", "object": "model"}],
-            }
-        )
-        await self._send_json(writer, 200, body)
+            })
+            await self._send_json(writer, 200, body)
+            return
+
+        cache_key = want_anthropic
+        try:
+            supports_natively = self._models_cache.get(cache_key)
+            if supports_natively is None:
+                supports_natively = await self._probe_models_format(
+                    backend_url, native_format, want_anthropic,
+                )
+                self._models_cache[cache_key] = supports_natively
+
+            data = await self._fetch_models(
+                backend_url, native_format, want_anthropic, supports_natively,
+            )
+            await self._send_json(writer, 200, json.dumps(data))
+        except Exception:
+            logger.exception("Models endpoint fallback")
+            body = json.dumps({
+                "object": "list",
+                "data": [{"id": "forge", "object": "model"}],
+            })
+            await self._send_json(writer, 200, body)
+
+    async def _probe_models_format(
+        self,
+        backend_url: str,
+        native_format: str,
+        want_anthropic: bool,
+    ) -> bool:
+        """Probe the backend to see if it supports the requested format.
+
+        Returns True if the backend supports the format natively, False otherwise.
+        """
+        url = self._models_endpoint(backend_url)
+        headers = {}
+        if want_anthropic:
+            headers["anthropic-version"] = "2023-06-01"
+
+        try:
+            resp = await self._http.get(url, headers=headers or None)
+            if resp.status_code == 200:
+                return True
+            if resp.status_code == 404:
+                return False
+        except Exception:
+            pass
+        # On error, assume it doesn't support the format → will try native
+        return False
+
+    async def _fetch_models(
+        self,
+        backend_url: str,
+        native_format: str,
+        want_anthropic: bool,
+        supports_natively: bool,
+    ) -> dict[str, Any]:
+        """Fetch models from the backend, converting format if needed."""
+        if supports_natively:
+            # Fetch in requested format, passthrough
+            url = self._models_endpoint(backend_url)
+            headers = {}
+            if want_anthropic:
+                headers["anthropic-version"] = "2023-06-01"
+            resp = await self._http.get(url, headers=headers or None)
+            resp.raise_for_status()
+            return resp.json()
+
+        # Fetch in native format, convert
+        url = self._native_models_endpoint(backend_url, native_format)
+        resp = await self._http.get(url)
+        resp.raise_for_status()
+        native_data = resp.json()
+
+        if native_format == "ollama":
+            if want_anthropic:
+                return ollama_models_to_anthropic(native_data)
+            return ollama_models_to_openai(native_data)
+        elif native_format == "openai":
+            if want_anthropic:
+                return openai_models_to_anthropic(native_data)
+            return native_data
+        elif native_format == "anthropic":
+            if want_anthropic:
+                return native_data
+            return anthropic_models_to_openai(native_data)
+
+        # Unknown format, return fallback
+        return {"object": "list", "data": [{"id": "forge", "object": "model"}]}
+
+    @staticmethod
+    def _models_endpoint(backend_url: str) -> str:
+        """Build the /v1/models endpoint URL for probing.
+
+        Both Anthropic and OpenAI use /v1/models, so the same URL applies.
+        """
+        base = backend_url.rstrip("/")
+        if base.endswith("/v1"):
+            return f"{base}/models"
+        return f"{base}/v1/models"
+
+    @staticmethod
+    def _native_models_endpoint(backend_url: str, native_format: str) -> str:
+        """Build the native models endpoint URL for a given backend format."""
+        base = backend_url.rstrip("/")
+        if native_format == "ollama":
+            return f"{base}/api/tags"
+        elif native_format == "openai":
+            if base.endswith("/v1"):
+                return f"{base}/models"
+            return f"{base}/v1/models"
+        elif native_format == "anthropic":
+            if base.endswith("/v1"):
+                return f"{base}/models"
+            return f"{base}/v1/models"
+        # Default: OpenAI-style
+        if base.endswith("/v1"):
+            return f"{base}/models"
+        return f"{base}/v1/models"
 
     async def _handle_completions(
         self,
@@ -360,7 +495,7 @@ class HTTPServer:
                 context_manager=self._context_manager,
                 max_retries=self._max_retries,
                 rescue_enabled=self._rescue_enabled,
-                anthropic_backend=self._anthropic_backend,
+                anthropic_backend=True,
             )
         except Exception as exc:
             logger.exception("Handler error")
@@ -405,7 +540,7 @@ class HTTPServer:
                 context_manager=self._context_manager,
                 max_retries=self._max_retries,
                 rescue_enabled=self._rescue_enabled,
-                anthropic_backend=self._anthropic_backend,
+                anthropic_backend=False,
             )
         except Exception as exc:
             logger.exception("Handler error")

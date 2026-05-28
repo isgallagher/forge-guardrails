@@ -56,6 +56,8 @@ class OllamaClient:
         recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url
+        self.backend_url = base_url
+        self._models_format = "ollama"
         self.model = model
         # Apply per-model recommended sampling defaults. Caller's explicit
         # (non-None) kwargs win over the map field-by-field.

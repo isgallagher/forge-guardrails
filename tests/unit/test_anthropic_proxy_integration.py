@@ -33,7 +33,7 @@ def _mock_client(response):
 
 @pytest.fixture
 async def anthropic_proxy_server():
-    """Factory that creates an HTTPServer with anthropic_backend=True on a random port."""
+    """Factory that creates an HTTPServer on a random port."""
     servers = []
 
     async def _make(response, serialize=False):
@@ -45,7 +45,6 @@ async def anthropic_proxy_server():
             host="127.0.0.1",
             port=0,
             serialize_requests=serialize,
-            anthropic_backend=True,
         )
         await srv.start()
         await asyncio.sleep(0)  # let accept loop start

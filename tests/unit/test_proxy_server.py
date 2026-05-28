@@ -15,10 +15,12 @@ from forge.proxy.server import HTTPServer
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _mock_client(response):
+def _mock_client(response, backend_url=None):
     """Create a mock LLMClient that returns the given response."""
     client = AsyncMock()
     client.api_format = "ollama"
+    client.backend_url = backend_url
+    client._models_format = "openai"
     client.send = AsyncMock(return_value=response)
     return client
 
