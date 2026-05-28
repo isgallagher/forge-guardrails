@@ -10,6 +10,10 @@ from forge.proxy.convert import (
     text_response_to_openai,
     tool_calls_to_sse_events,
     text_to_sse_events,
+    openai_models_to_anthropic,
+    anthropic_models_to_openai,
+    ollama_models_to_openai,
+    ollama_models_to_anthropic,
 )
 
 
@@ -254,3 +258,97 @@ class TestTextToSseEvents:
         events = text_to_sse_events("test", chunk_size=1)
         ids = {e["id"] for e in events}
         assert len(ids) == 1
+
+
+# ── Models endpoint conversion ─────────────────────────────
+
+
+class TestOpenaiModelsToAnthropic:
+    def test_basic_conversion(self):
+        result = openai_models_to_anthropic({
+            "object": "list",
+            "data": [
+                {"id": "llama3:8b", "object": "model", "created": 1234},
+                {"id": "mistral:7b", "object": "model", "created": 5678},
+            ],
+        })
+        assert "data" in result
+        assert len(result["data"]) == 2
+        assert result["data"][0]["type"] == "model"
+        assert result["data"][0]["id"] == "llama3:8b"
+        assert result["data"][0]["display_name"] == "llama3:8b"
+
+    def test_empty_list(self):
+        result = openai_models_to_anthropic({"object": "list", "data": []})
+        assert result == {"data": []}
+
+
+class TestAnthropicModelsToOpenai:
+    def test_basic_conversion(self):
+        result = anthropic_models_to_openai({
+            "data": [
+                {
+                    "type": "model",
+                    "id": "claude-sonnet-4-6",
+                    "display_name": "Claude Sonnet 4.6",
+                    "created_at": "2025-01-01T00:00:00Z",
+                },
+            ],
+        })
+        assert result["object"] == "list"
+        assert len(result["data"]) == 1
+        assert result["data"][0]["id"] == "claude-sonnet-4-6"
+        assert result["data"][0]["object"] == "model"
+
+    def test_empty_list(self):
+        result = anthropic_models_to_openai({"data": []})
+        assert result == {"object": "list", "data": []}
+
+
+class TestOllamaModelsToOpenai:
+    def test_basic_conversion(self):
+        result = ollama_models_to_openai({
+            "models": [
+                {
+                    "name": "llama3:8b",
+                    "modified_at": "2025-01-01T00:00:00Z",
+                    "size": 4000000000,
+                },
+                {
+                    "name": "mistral:7b",
+                    "modified_at": "2025-02-01T00:00:00Z",
+                    "size": 3000000000,
+                },
+            ],
+        })
+        assert result["object"] == "list"
+        assert len(result["data"]) == 2
+        assert result["data"][0]["id"] == "llama3:8b"
+        assert result["data"][0]["object"] == "model"
+        assert result["data"][1]["id"] == "mistral:7b"
+
+    def test_empty_list(self):
+        result = ollama_models_to_openai({"models": []})
+        assert result == {"object": "list", "data": []}
+
+
+class TestOllamaModelsToAnthropic:
+    def test_basic_conversion(self):
+        result = ollama_models_to_anthropic({
+            "models": [
+                {
+                    "name": "llama3:8b",
+                    "modified_at": "2025-01-01T00:00:00Z",
+                },
+            ],
+        })
+        assert "data" in result
+        assert len(result["data"]) == 1
+        assert result["data"][0]["type"] == "model"
+        assert result["data"][0]["id"] == "llama3:8b"
+        assert result["data"][0]["display_name"] == "llama3:8b"
+        assert result["data"][0]["created_at"] == "2025-01-01T00:00:00Z"
+
+    def test_empty_list(self):
+        result = ollama_models_to_anthropic({"models": []})
+        assert result == {"data": []}

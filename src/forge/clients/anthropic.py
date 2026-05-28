@@ -44,6 +44,8 @@ class AnthropicClient:
     ) -> None:
         self.model = model
         self.max_tokens = max_tokens
+        self.backend_url = base_url
+        self._models_format = "anthropic"
         self._tool_choice = tool_choice  # "auto", "any", or None (default=auto)
         # Accepted for API symmetry across clients but currently a no-op:
         # AnthropicClient does not expose sampling kwargs through forge today.
