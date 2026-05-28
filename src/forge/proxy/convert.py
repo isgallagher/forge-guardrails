@@ -874,3 +874,62 @@ def anthropic_to_openai_sse(anthropic_events: list[dict[str, Any]], model: str) 
         )
 
     return events
+
+
+# ── Models endpoint conversion ──────────────────────────────
+
+
+def openai_models_to_anthropic(openai_data: dict[str, Any]) -> dict[str, Any]:
+    """Convert an OpenAI-style models list response to Anthropic format."""
+    models = []
+    for m in openai_data.get("data", []):
+        model_id = m.get("id", "")
+        models.append({
+            "type": "model",
+            "id": model_id,
+            "display_name": m.get("id", model_id),
+            "created_at": m.get("created", ""),
+        })
+    return {"data": models}
+
+
+def anthropic_models_to_openai(anthropic_data: dict[str, Any]) -> dict[str, Any]:
+    """Convert an Anthropic-style models list response to OpenAI format."""
+    models = []
+    for m in anthropic_data.get("data", []):
+        model_id = m.get("id", "")
+        models.append({
+            "id": model_id,
+            "object": "model",
+            "created": m.get("created_at", 0),
+            "owned_by": "",
+        })
+    return {"object": "list", "data": models}
+
+
+def ollama_models_to_openai(ollama_data: dict[str, Any]) -> dict[str, Any]:
+    """Convert an Ollama /api/tags response to OpenAI models list format."""
+    models = []
+    for m in ollama_data.get("models", []):
+        model_name = m.get("name", "")
+        models.append({
+            "id": model_name,
+            "object": "model",
+            "created": 0,
+            "owned_by": "",
+        })
+    return {"object": "list", "data": models}
+
+
+def ollama_models_to_anthropic(ollama_data: dict[str, Any]) -> dict[str, Any]:
+    """Convert an Ollama /api/tags response to Anthropic models list format."""
+    models = []
+    for m in ollama_data.get("models", []):
+        model_name = m.get("name", "")
+        models.append({
+            "type": "model",
+            "id": model_name,
+            "display_name": model_name,
+            "created_at": m.get("modified_at", ""),
+        })
+    return {"data": models}

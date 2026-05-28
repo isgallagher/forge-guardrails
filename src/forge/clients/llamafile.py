@@ -150,6 +150,8 @@ class LlamafileClient:
         recommended_sampling: bool = False,
     ) -> None:
         self.base_url = base_url
+        self.backend_url = base_url
+        self._models_format = "openai"
         # gguf_path is the canonical identity. self.model is the stem (no
         # .gguf / .llamafile suffix) — used for the wire-format model field
         # (llama-server ignores it but it flows into eval JSONL rows) and
