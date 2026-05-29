@@ -87,7 +87,7 @@ def main() -> None:
     parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"), help="Proxy listen host (default: 127.0.0.1). Env: HOST")
     parser.add_argument("--port", type=int, default=int(os.environ.get("PORT", "8081")), help="Proxy listen port (default: 8081). Env: PORT")
     parser.add_argument("--serialize", action="store_true", default=None, help="Force request serialization. Env: SERIALIZE")
-    parser.add_argument("--no-serialize", action="store_true", help="Disable request serialization")
+    parser.add_argument("--no-serialize", action="store_true", default=None, help="Disable request serialization")
     parser.add_argument("--max-retries", type=int, default=int(os.environ.get("MAX_RETRIES", "3")), help="Max retries per request (default: 3). Env: MAX_RETRIES")
     parser.add_argument("--no-rescue", action="store_true", default=os.environ.get("RESCUE", "true").lower() == "false", help="Disable rescue parsing. Env: RESCUE (set to 'false' to disable)")
     parser.add_argument(
@@ -120,12 +120,16 @@ def main() -> None:
         datefmt="%H:%M:%S",
     )
 
-    # Resolve serialize flag
-    serialize = None
-    if args.serialize:
+    # Resolve serialize flag — env var wins, then CLI flags
+    env_serialize = os.environ.get("SERIALIZE")
+    if env_serialize is not None:
+        serialize = env_serialize.lower() not in ("0", "false", "no")
+    elif args.serialize:
         serialize = True
     elif args.no_serialize:
         serialize = False
+    else:
+        serialize = None
 
     proxy = ProxyServer(
         backend_url=args.backend_url,

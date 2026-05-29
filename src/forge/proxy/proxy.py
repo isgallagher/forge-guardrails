@@ -74,8 +74,8 @@ class ProxyServer:
             extra_flags: Additional CLI flags for the managed backend.
             host: Proxy listen host.
             port: Proxy listen port.
-            serialize: Serialize requests via lock. None = auto (True for
-                managed, False for external).
+            serialize: Serialize requests via lock. None = default (False,
+                allows concurrency; set True to enforce serial execution).
             max_retries: Max consecutive retries for bad LLM responses.
             rescue_enabled: Attempt rescue parsing of text responses.
         """
@@ -97,9 +97,10 @@ class ProxyServer:
         self._max_retries = max_retries
         self._rescue_enabled = rescue_enabled
 
-        # Auto-detect serialization: managed = single GPU = serialize
+        # Default to no serialization: llama-server's internal queue handles
+        # single-slot concurrency with proper timeout handling.
         if serialize is None:
-            self._serialize = backend is not None
+            self._serialize = False
         else:
             self._serialize = serialize
 
