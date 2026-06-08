@@ -108,6 +108,7 @@ def openai_to_messages(openai_messages: list[dict[str, Any]]) -> list[Message]:
 def tool_calls_to_openai(
     tool_calls: list[ToolCall],
     model: str = "forge",
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert forge ToolCalls to an OpenAI chat completions response object."""
     tc_list = []
@@ -138,13 +139,14 @@ def tool_calls_to_openai(
                 "finish_reason": "tool_calls",
             }
         ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 
 def text_response_to_openai(
     text: str,
     model: str = "forge",
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Convert a text response to an OpenAI chat completions response object."""
     return {
@@ -161,7 +163,7 @@ def text_response_to_openai(
                 "finish_reason": "stop",
             }
         ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
     }
 
 
@@ -171,6 +173,7 @@ def text_response_to_openai(
 def tool_calls_to_sse_events(
     tool_calls: list[ToolCall],
     model: str = "forge",
+    usage: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Convert forge ToolCalls to a sequence of SSE chunk objects.
 
@@ -244,6 +247,15 @@ def tool_calls_to_sse_events(
         }
     )
 
+    # Append usage chunk if available
+    if usage:
+        events.append({
+            "id": cmpl_id,
+            "object": "chat.completion.chunk",
+            "model": model,
+            "usage": usage,
+        })
+
     return events
 
 
@@ -251,6 +263,7 @@ def text_to_sse_events(
     text: str,
     model: str = "forge",
     chunk_size: int = 0,
+    usage: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Convert a text response to SSE chunk objects.
 
@@ -299,6 +312,15 @@ def text_to_sse_events(
             ],
         }
     )
+
+    # Append usage chunk if available
+    if usage:
+        events.append({
+            "id": cmpl_id,
+            "object": "chat.completion.chunk",
+            "model": model,
+            "usage": usage,
+        })
 
     return events
 
@@ -550,7 +572,11 @@ def openai_to_anthropic_response(openai_resp: dict[str, Any], model: str) -> dic
     }
 
 
-def openai_to_anthropic_sse(openai_events: list[dict[str, Any]], model: str) -> list[dict[str, Any]]:
+def openai_to_anthropic_sse(
+    openai_events: list[dict[str, Any]],
+    model: str,
+    usage: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Convert OpenAI SSE chunks to Anthropic SSE events.
 
     Handles text deltas, tool call deltas, and finish_reason.
@@ -658,6 +684,15 @@ def openai_to_anthropic_sse(openai_events: list[dict[str, Any]], model: str) -> 
     for ev in events:
         wrapped.append({**ev, "id": cmpl_id, "model": model})
 
+    # Build Anthropic usage from OpenAI usage
+    if usage:
+        anthropic_usage = {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        }
+    else:
+        anthropic_usage = {"input_tokens": 0, "output_tokens": 0}
+
     # Add message_start
     wrapped.insert(
         0,
@@ -673,7 +708,7 @@ def openai_to_anthropic_sse(openai_events: list[dict[str, Any]], model: str) -> 
                 "content": [],
                 "stop_reason": "end_turn",
                 "stop_sequence": None,
-                "usage": {"input_tokens": 0, "output_tokens": 0},
+                "usage": anthropic_usage,
             },
         },
     )

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from forge.clients.base import LLMClient
+from forge.clients.base import LLMClient, TokenUsage
 from forge.context.manager import ContextManager
 from forge.core.inference import fold_and_serialize, run_inference
 from forge.core.workflow import TextResponse, ToolCall, ToolSpec
@@ -34,21 +34,42 @@ logger = logging.getLogger("forge.proxy")
 # as part of the ``sampling`` kwarg; OllamaClient drops it (no analog field).
 
 
+def _get_usage(client: LLMClient) -> dict[str, Any] | None:
+    """Extract token usage from a client's last_usage dict.
+
+    Reads the entry keyed by the client's slot_id (llamafile) or 0 (ollama),
+    and converts the TokenUsage dataclass to a plain dict.
+    """
+    last_usage = getattr(client, "last_usage", None)
+    if not isinstance(last_usage, dict):
+        return None
+    slot_id = getattr(client, "_slot_id", None) or 0
+    usage = last_usage.get(slot_id)
+    if isinstance(usage, TokenUsage):
+        return {
+            "prompt_tokens": usage.prompt_tokens,
+            "completion_tokens": usage.completion_tokens,
+            "total_tokens": usage.total_tokens,
+        }
+    return None
+
+
 def _format_response(
     response: list[ToolCall] | TextResponse | str | None,
     is_stream: bool,
     model: str,
     anthropic_backend: bool,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Format an inference result into the appropriate wire format."""
     if response is None or isinstance(response, str):
         text = response or ""
-        return _format_text(text, is_stream, model, anthropic_backend)
+        return _format_text(text, is_stream, model, anthropic_backend, usage)
     elif isinstance(response, TextResponse):
-        return _format_text(response.content, is_stream, model, anthropic_backend)
+        return _format_text(response.content, is_stream, model, anthropic_backend, usage)
     else:
         # list[ToolCall]
-        return _format_tool_calls(response, is_stream, model, anthropic_backend)
+        return _format_tool_calls(response, is_stream, model, anthropic_backend, usage)
 
 
 def _format_text(
@@ -56,16 +77,17 @@ def _format_text(
     is_stream: bool,
     model: str,
     anthropic_backend: bool,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Format a text response."""
     if anthropic_backend:
         if is_stream:
-            return openai_to_anthropic_sse(text_to_sse_events(text, model), model)
-        return openai_to_anthropic_response(text_response_to_openai(text, model), model)
+            return openai_to_anthropic_sse(text_to_sse_events(text, model, usage=usage), model, usage=usage)
+        return openai_to_anthropic_response(text_response_to_openai(text, model, usage=usage), model)
     else:
         if is_stream:
-            return text_to_sse_events(text, model)
-        return text_response_to_openai(text, model)
+            return text_to_sse_events(text, model, usage=usage)
+        return text_response_to_openai(text, model, usage=usage)
 
 
 def _format_tool_calls(
@@ -73,16 +95,17 @@ def _format_tool_calls(
     is_stream: bool,
     model: str,
     anthropic_backend: bool,
+    usage: dict[str, Any] | None = None,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Format a tool call response."""
     if anthropic_backend:
         if is_stream:
-            return openai_to_anthropic_sse(tool_calls_to_sse_events(tool_calls, model), model)
-        return openai_to_anthropic_response(tool_calls_to_openai(tool_calls, model), model)
+            return openai_to_anthropic_sse(tool_calls_to_sse_events(tool_calls, model, usage=usage), model, usage=usage)
+        return openai_to_anthropic_response(tool_calls_to_openai(tool_calls, model, usage=usage), model)
     else:
         if is_stream:
-            return tool_calls_to_sse_events(tool_calls, model)
-        return tool_calls_to_openai(tool_calls, model)
+            return tool_calls_to_sse_events(tool_calls, model, usage=usage)
+        return tool_calls_to_openai(tool_calls, model, usage=usage)
 _SAMPLING_FIELDS = (
     "temperature",
     "top_p",
@@ -187,7 +210,8 @@ async def handle_chat_completions(
         api_messages = fold_and_serialize(messages, api_format)
         response = await client.send(api_messages, tools=None, sampling=sampling, max_tokens=max_tokens)
         text = response.content if isinstance(response, TextResponse) else ""
-        return _format_response(text, is_stream, model_name, anthropic_backend)
+        usage = _get_usage(client)
+        return _format_response(text, is_stream, model_name, anthropic_backend, usage)
 
     logger.info("Guardrails active: tools=%s", tool_names)
 
@@ -213,11 +237,13 @@ async def handle_chat_completions(
         # error. The client's own agentic loop can decide what to do.
         raw = exc.raw_response or ""
         logger.warning("Retries exhausted, passing through text: %.120s", raw)
-        return _format_response(raw, is_stream, model_name, anthropic_backend)
+        usage = _get_usage(client)
+        return _format_response(raw, is_stream, model_name, anthropic_backend, usage)
 
     # run_inference returns None when max_attempts exhausted
     if result is None:
-        return _format_response("", is_stream, model_name, anthropic_backend)
+        usage = _get_usage(client)
+        return _format_response("", is_stream, model_name, anthropic_backend, usage)
 
     tool_calls = result.response
     logger.debug("Model returned %d tool call(s): %s", len(tool_calls), [tc.tool for tc in tool_calls])
@@ -232,15 +258,18 @@ async def handle_chat_completions(
         # Pure respond — convert to text
         text = respond_calls[0].args.get("message", "")
         logger.debug("Stripping respond() call, returning as text")
-        return _format_response(text, is_stream, model_name, anthropic_backend)
+        usage = _get_usage(client)
+        return _format_response(text, is_stream, model_name, anthropic_backend, usage)
 
     if other_calls:
         # Real tool calls (possibly mixed with respond) — return the
         # real tool calls only, drop respond.
-        return _format_response(other_calls, is_stream, model_name, anthropic_backend)
+        usage = _get_usage(client)
+        return _format_response(other_calls, is_stream, model_name, anthropic_backend, usage)
 
     # Shouldn't happen, but handle empty tool_calls gracefully
-    return _format_response("", is_stream, model_name, anthropic_backend)
+    usage = _get_usage(client)
+    return _format_response("", is_stream, model_name, anthropic_backend, usage)
 
 
 async def handle_messages(
