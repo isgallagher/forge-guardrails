@@ -252,11 +252,12 @@ class AnthropicClient:
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Build kwargs dict for messages.create / messages.stream."""
         system, converted = self._convert_messages(messages)
         kwargs: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": converted,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
@@ -281,12 +282,8 @@ class AnthropicClient:
         AnthropicClient does not currently expose sampling kwargs through
         forge.
         """
-        if sampling:
-            log.debug(
-                "AnthropicClient ignores per-call sampling overrides: %s",
-                sorted(sampling.keys()),
-            )
-        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens)
+        model = sampling.get("model") if sampling else None
+        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens, model=model)
         try:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
@@ -308,12 +305,8 @@ class AnthropicClient:
 
         ``sampling`` is accepted for protocol symmetry but ignored.
         """
-        if sampling:
-            log.debug(
-                "AnthropicClient ignores per-call sampling overrides: %s",
-                sorted(sampling.keys()),
-            )
-        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens)
+        model = sampling.get("model") if sampling else None
+        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens, model=model)
 
         accumulated_text = ""
         # Track multiple tool_use blocks by index.
@@ -381,11 +374,12 @@ class AnthropicClient:
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Build a raw JSON body for POST /v1/messages."""
         system, converted = self._convert_messages(messages)
         body: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": converted,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
@@ -438,7 +432,8 @@ class AnthropicClient:
                 "AnthropicClient.send_http ignores per-call sampling overrides: %s",
                 sorted(sampling.keys()),
             )
-        body = self._build_request_body(messages, tools, max_tokens=max_tokens)
+        model = sampling.get("model") if sampling else None
+        body = self._build_request_body(messages, tools, max_tokens=max_tokens, model=model)
 
         resp = await self._http.post("/v1/messages", json=body)
         if resp.status_code != 200:
@@ -467,12 +462,8 @@ class AnthropicClient:
         Bypasses the SDK entirely — used in proxy mode where the backend
         handles authentication and no API key is available.
         """
-        if sampling:
-            log.debug(
-                "AnthropicClient.send_http_stream ignores per-call sampling overrides: %s",
-                sorted(sampling.keys()),
-            )
-        body = self._build_request_body(messages, tools, max_tokens=max_tokens)
+        model = sampling.get("model") if sampling else None
+        body = self._build_request_body(messages, tools, max_tokens=max_tokens, model=model)
         body["stream"] = True
 
         accumulated_text = ""
