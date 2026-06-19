@@ -27,7 +27,7 @@ def _mock_client(response):
     """Create a mock LLMClient that returns the given response."""
     client = AsyncMock()
     client.api_format = "ollama"
-    client.send = AsyncMock(return_value=response)
+    client.send_http = AsyncMock(return_value=response)
     return client
 
 

@@ -16,7 +16,7 @@ def _mock_client(response):
     """Create a mock LLMClient that returns the given response."""
     client = AsyncMock()
     client.api_format = "ollama"
-    client.send = AsyncMock(return_value=response)
+    client.send_http = AsyncMock(return_value=response)
     return client
 
 
@@ -196,7 +196,7 @@ class TestErrorPaths:
         # Model always returns text — will exhaust retries
         client = AsyncMock()
         client.api_format = "ollama"
-        client.send = AsyncMock(return_value=TextResponse(content="I can't do that"))
+        client.send_http = AsyncMock(return_value=TextResponse(content="I can't do that"))
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")]),
             client, _context_manager(), max_retries=1,
@@ -210,7 +210,7 @@ class TestErrorPaths:
         """Retries exhausted in stream mode returns text SSE events."""
         client = AsyncMock()
         client.api_format = "ollama"
-        client.send = AsyncMock(return_value=TextResponse(content="nope"))
+        client.send_http = AsyncMock(return_value=TextResponse(content="nope"))
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")], stream=True),
             client, _context_manager(), max_retries=1,
@@ -225,11 +225,11 @@ class TestErrorPaths:
 
 
 class TestSamplingPlumbing:
-    """Issue A: inbound body sampling fields plumbed through to client.send."""
+    """Issue A: inbound body sampling fields plumbed through to client.send_http."""
 
     @pytest.mark.asyncio
     async def test_no_tools_path_passes_sampling(self):
-        """Inbound body sampling fields reach client.send on the no-tools path."""
+        """Inbound body sampling fields reach client.send_http on the no-tools path."""
         client = _mock_client(TextResponse(content="ok"))
         body = _body(messages=[{"role": "user", "content": "hi"}])
         body["temperature"] = 0.5
@@ -237,8 +237,8 @@ class TestSamplingPlumbing:
 
         await handle_chat_completions(body, client, _context_manager(), max_retries=1)
 
-        client.send.assert_called_once()
-        sampling = client.send.call_args.kwargs["sampling"]
+        client.send_http.assert_called_once()
+        sampling = client.send_http.call_args.kwargs["sampling"]
         assert sampling == {"temperature": 0.5, "top_p": 0.9, "model": "test"}
 
     @pytest.mark.asyncio
@@ -250,7 +250,7 @@ class TestSamplingPlumbing:
             _body(), client, _context_manager(), max_retries=1,
         )
 
-        sampling = client.send.call_args.kwargs["sampling"]
+        sampling = client.send_http.call_args.kwargs["sampling"]
         assert sampling == {"model": "test"}
 
     @pytest.mark.asyncio
@@ -290,10 +290,10 @@ class TestSamplingPlumbing:
         body1 = _body()
         body1["temperature"] = 0.99
         await handle_chat_completions(body1, client, _context_manager(), max_retries=1)
-        first_sampling = client.send.call_args.kwargs["sampling"]
+        first_sampling = client.send_http.call_args.kwargs["sampling"]
         assert first_sampling == {"temperature": 0.99, "model": "test"}
 
         # Second request: no sampling fields.
         await handle_chat_completions(_body(), client, _context_manager(), max_retries=1)
-        second_sampling = client.send.call_args.kwargs["sampling"]
+        second_sampling = client.send_http.call_args.kwargs["sampling"]
         assert second_sampling == {"model": "test"}

@@ -207,12 +207,12 @@ class TestInferenceInjection:
         # Mock client — capture what api_messages it receives
         captured_messages = []
 
-        async def mock_send(api_messages, tools=None, sampling=None, max_tokens=None):
+        async def mock_send_http(api_messages, tools=None, sampling=None, max_tokens=None):
             captured_messages.extend(api_messages)
             return [ToolCall(tool="done", args={})]
 
         mock_client = AsyncMock()
-        mock_client.send = mock_send
+        mock_client.send_http = mock_send_http
         mock_client.api_format = "ollama"
 
         validator = ResponseValidator(tool_names=["done"], rescue_enabled=False)
@@ -252,12 +252,12 @@ class TestInferenceInjection:
 
         captured_messages = []
 
-        async def mock_send(api_messages, tools=None, sampling=None, max_tokens=None):
+        async def mock_send_http(api_messages, tools=None, sampling=None, max_tokens=None):
             captured_messages.extend(api_messages)
             return [ToolCall(tool="done", args={})]
 
         mock_client = AsyncMock()
-        mock_client.send = mock_send
+        mock_client.send_http = mock_send_http
         mock_client.api_format = "ollama"
 
         validator = ResponseValidator(tool_names=["done"], rescue_enabled=False)

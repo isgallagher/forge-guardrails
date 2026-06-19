@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
-from forge.core.workflow import LLMResponse, ToolCall, TextResponse, ToolSpec
+from forge.core.workflow import LLMResponse, ToolSpec
 
 
 @dataclass(frozen=True)
@@ -73,7 +73,7 @@ class LLMClient(Protocol):
     3. Handling native FC or prompt-injected calling internally
     4. Optionally streaming partial responses via send_stream()
 
-    The client does NOT retry. Retry logic lives in the WorkflowRunner.
+    The client does NOT retry. Retry logic lives in run_inference.
     """
 
     api_format: str
@@ -135,6 +135,31 @@ class LLMClient(Protocol):
                 Per-call values win over instance state without mutating self.
             max_tokens: Optional token limit for the response.
         """
+        ...
+
+    async def send_http(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Send via direct HTTP (SDK-free). Same contract as send().
+
+        Used in proxy mode to bypass SDK-based authentication.
+        For OpenAICompatibleClient, this is an alias for send().
+        For AnthropicClient, this uses httpx directly.
+        """
+        ...
+
+    async def send_http_stream(
+        self,
+        messages: list[dict[str, str]],
+        tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream via direct HTTP (SDK-free). Same contract as send_stream()."""
         ...
 
     async def get_context_length(self) -> int | None:

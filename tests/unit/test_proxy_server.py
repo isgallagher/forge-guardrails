@@ -21,7 +21,7 @@ def _mock_client(response, backend_url=None):
     client.api_format = "ollama"
     client.backend_url = backend_url
     client._models_format = "openai"
-    client.send = AsyncMock(return_value=response)
+    client.send_http = AsyncMock(return_value=response)
     return client
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from forge.clients.base import LLMClient, TokenUsage
@@ -26,25 +27,40 @@ from forge.tools.respond import RESPOND_TOOL_NAME, respond_spec
 logger = logging.getLogger("forge.proxy")
 
 
+@dataclass(frozen=True)
+class _PassthroughStream:
+    """Sentinel returned by handlers to signal the server should forward the backend SSE stream directly.
+
+    The server detects this type and uses httpx.AsyncClient.stream() to
+    pipe the backend's SSE events to the client without buffering.
+    """
+
+    path: str
+    body: dict[str, Any]
+    headers: dict[str, str] | None = None
+
+
 # OpenAI-compatible top-level body fields plumbed from inbound body to
-# client. llama-server / Ollama support the sampling fields below as
-# top-level body / options fields. Anthropic ignores them.
+# client. Local backends (llama-server, vLLM, Ollama API) support the
+# sampling fields below as top-level body / options fields. Anthropic
+# ignores them.
 # ``chat_template_kwargs`` is a nested dict of Jinja template variables
-# (e.g. {"reasoning_effort": "high"}) — passed through to the LlamafileClient
-# as part of the ``sampling`` kwarg; OllamaClient drops it (no analog field).
+# (e.g. {"reasoning_effort": "high"}) — passed through to the
+# OpenAICompatibleClient as part of the ``sampling`` kwarg.
 
 
 def _get_usage(client: LLMClient) -> dict[str, Any] | None:
     """Extract token usage from a client's last_usage dict.
 
-    Reads the entry keyed by the client's slot_id (llamafile) or 0 (ollama),
-    and converts the TokenUsage dataclass to a plain dict.
+    Reads the entry keyed by the client's slot_id, and converts the
+    TokenUsage dataclass to a plain dict.
     """
     last_usage = getattr(client, "last_usage", None)
     if not isinstance(last_usage, dict):
         return None
     slot_id = getattr(client, "_slot_id", None) or 0
-    usage = last_usage.get(slot_id)
+    # OpenAICompatibleClient uses str(slot_id) keys, so try both.
+    usage = last_usage.get(slot_id) or last_usage.get(str(slot_id))
     if isinstance(usage, TokenUsage):
         return {
             "prompt_tokens": usage.prompt_tokens,
@@ -163,6 +179,7 @@ async def handle_chat_completions(
     max_retries: int = 3,
     rescue_enabled: bool = True,
     anthropic_backend: bool = False,
+    backend_supports_openai: bool = False,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Handle a /v1/chat/completions request.
 
@@ -177,6 +194,7 @@ async def handle_chat_completions(
         max_retries: Max consecutive retries for bad responses.
         rescue_enabled: Whether to attempt rescue parsing.
         anthropic_backend: If True, return Anthropic-format responses.
+        backend_supports_openai: If True, backend supports OpenAI format.
 
     Returns:
         If stream=false: a response dict (OpenAI or Anthropic format).
@@ -205,10 +223,40 @@ async def handle_chat_completions(
     # No tools → plain chat completion, no guardrails needed.
     # Forward to backend and return the response directly.
     if not tool_specs:
+        # Pass-through: backend supports OpenAI natively
+        if backend_supports_openai:
+            logger.debug("OpenAI pass-through: forwarding request directly to backend")
+            send_body: dict[str, Any] = {
+                "messages": openai_messages,
+            }
+            if model_name:
+                send_body["model"] = model_name
+            if max_tokens is not None:
+                send_body["max_tokens"] = max_tokens
+            if sampling:
+                send_body.update({k: v for k, v in sampling.items() if k != "model"})
+
+            if is_stream:
+                send_body["stream"] = True
+                return _PassthroughStream(
+                    path="/v1/chat/completions",
+                    body=send_body,
+                )
+
+            response = await client.send_http(  # type: ignore[attr-defined]
+                send_body.get("messages", []),
+                tools=None,
+                sampling=sampling,
+                max_tokens=max_tokens,
+            )
+            text = response.content if isinstance(response, TextResponse) else ""
+            usage = _get_usage(client)
+            return _format_response(text, is_stream, model_name, anthropic_backend, usage)
+
         logger.debug("No tools in request, passing through to backend")
         api_format = getattr(client, "api_format", "ollama")
         api_messages = fold_and_serialize(messages, api_format)
-        response = await client.send(api_messages, tools=None, sampling=sampling, max_tokens=max_tokens)
+        response = await client.send_http(api_messages, tools=None, sampling=sampling, max_tokens=max_tokens)
         text = response.content if isinstance(response, TextResponse) else ""
         usage = _get_usage(client)
         return _format_response(text, is_stream, model_name, anthropic_backend, usage)
@@ -279,6 +327,7 @@ async def handle_messages(
     max_retries: int = 3,
     rescue_enabled: bool = True,
     anthropic_backend: bool = False,
+    backend_supports_anthropic: bool = False,
 ) -> dict[str, Any] | list[dict[str, Any]]:
     """Handle a /v1/messages request (Anthropic incoming format).
 
@@ -292,11 +341,27 @@ async def handle_messages(
         max_retries: Max consecutive retries for bad responses.
         rescue_enabled: Whether to attempt rescue parsing.
         anthropic_backend: If True, return Anthropic-format responses.
+        backend_supports_anthropic: If True, backend supports Anthropic format.
 
     Returns:
         If stream=false: a response dict.
         If stream=true: a list of SSE chunk dicts.
     """
+    # Pass-through: backend supports Anthropic and no tools present.
+    # Forward the body directly to the backend without conversion.
+    if backend_supports_anthropic and not body.get("tools"):
+        is_stream = body.get("stream", False)
+        if is_stream:
+            logger.debug("Anthropic pass-through stream: forwarding directly to backend")
+            return _PassthroughStream(
+                path="/v1/messages",
+                body=body,
+                headers={"anthropic-version": "2023-06-01"},
+            )
+        logger.debug("Anthropic pass-through: forwarding request directly to backend")
+        raw_response = await client.send_raw(body)  # type: ignore[attr-defined]
+        return raw_response
+
     # Convert Anthropic body to OpenAI messages
     openai_messages = anthropic_to_openai_messages(body)
 

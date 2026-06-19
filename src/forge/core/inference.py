@@ -1,10 +1,8 @@
 """Inference loop — compact, fold, serialize, send, validate, retry.
 
-Extracted from WorkflowRunner so both the runner and the proxy can share
-the same input-processing and validation logic. This is the "front half"
-of the agentic loop: everything up to and including getting a clean
-response from the LLM. The "back half" (step enforcement, tool execution,
-terminal check) stays in the caller.
+This is the "front half" of the agentic loop: everything up to and
+including getting a clean response from the LLM. The "back half"
+(step enforcement, tool execution, terminal check) stays in the caller.
 """
 
 from __future__ import annotations
@@ -203,7 +201,7 @@ async def run_inference(
         if stream:
             response = await _send_streaming(client, api_messages, tool_specs, on_chunk, sampling, max_tokens)
         else:
-            response = await client.send(api_messages, tools=tool_specs, sampling=sampling, max_tokens=max_tokens)
+            response = await client.send_http(api_messages, tools=tool_specs, sampling=sampling, max_tokens=max_tokens)
 
         # Update context manager with real token count if available.
         _sync_token_count(client, context_manager)
@@ -308,7 +306,7 @@ async def _send_streaming(
 ) -> LLMResponse:
     """Send via streaming, forwarding chunks to on_chunk callback."""
     response = None
-    async for chunk in client.send_stream(api_messages, tools=tool_specs, sampling=sampling, max_tokens=max_tokens):
+    async for chunk in client.send_http_stream(api_messages, tools=tool_specs, sampling=sampling, max_tokens=max_tokens):
         if on_chunk is not None:
             await on_chunk(chunk)
         if chunk.type == ChunkType.FINAL:
