@@ -33,7 +33,7 @@ def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> Non
     if not isinstance(last_usage, dict):
         return
     slot_id = getattr(client, "_slot_id", None) or 0
-    usage: TokenUsage | None = last_usage.get(slot_id)
+    usage: TokenUsage | None = last_usage.get(slot_id) or last_usage.get(str(slot_id))
     if usage is not None:
         context_manager.update_token_count(usage.total_tokens)
 

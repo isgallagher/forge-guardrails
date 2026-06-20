@@ -217,6 +217,8 @@ class HTTPServer:
                         await writer.drain()
                 writer.write(b"\r\n")
                 await writer.drain()
+        except ConnectionResetError:
+            logger.debug("Stream forward: client disconnected")
         except Exception as exc:
             logger.exception("Stream forward error")
             await self._send_error(writer, 502, str(exc))

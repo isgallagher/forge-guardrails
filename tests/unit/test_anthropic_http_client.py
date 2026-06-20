@@ -145,10 +145,10 @@ class TestSendHttp:
 
         assert isinstance(result, TextResponse)
         assert result.content == "Hello!"
-        assert client.last_usage[0] is not None
-        assert isinstance(client.last_usage[0], TokenUsage)
-        assert client.last_usage[0].prompt_tokens == 10
-        assert client.last_usage[0].completion_tokens == 20
+        usage = client.last_usage["0"]
+        assert usage.prompt_tokens == 10
+        assert usage.completion_tokens == 20
+        assert usage.total_tokens == 30
 
     @pytest.mark.asyncio
     async def test_tool_call_response(self):

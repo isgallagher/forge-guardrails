@@ -35,6 +35,14 @@ Forge is a guardrails proxy that sits between LLM clients (Claude Code, Continue
 
 Guardrails (validation, retry, nudges, step enforcement) always apply to requests **with tools**. Requests without tools pass through directly. The `respond` synthetic tool is injected when tools are present so the model calls `respond(message="...")` instead of producing bare text.
 
+### Format Conversion (Encoder/Decoder Pattern)
+
+The client adapter (`src/forge/clients/`) is the encoder boundary — it converts
+backend wire format into forge's canonical types (`ToolCall`, `TextResponse`,
+`TokenUsage`). The conversion module (`src/forge/proxy/convert.py`) is the
+decoder boundary — it converts canonical types to the appropriate wire format.
+Everything in between (inference, guardrails, context) uses canonical types only.
+
 ### Testing
 
 Run: `python3 -m pytest --tb=short -q`

@@ -50,17 +50,12 @@ class _PassthroughStream:
 
 
 def _get_usage(client: LLMClient) -> dict[str, Any] | None:
-    """Extract token usage from a client's last_usage dict.
-
-    Reads the entry keyed by the client's slot_id, and converts the
-    TokenUsage dataclass to a plain dict.
-    """
+    """Extract token usage from a client's last_usage dict."""
     last_usage = getattr(client, "last_usage", None)
     if not isinstance(last_usage, dict):
         return None
     slot_id = getattr(client, "_slot_id", None) or 0
-    # OpenAICompatibleClient uses str(slot_id) keys, so try both.
-    usage = last_usage.get(slot_id) or last_usage.get(str(slot_id))
+    usage = last_usage.get(str(slot_id)) or last_usage.get(slot_id)
     if isinstance(usage, TokenUsage):
         return {
             "prompt_tokens": usage.prompt_tokens,

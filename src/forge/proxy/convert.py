@@ -9,6 +9,17 @@ from typing import Any
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
 from forge.core.workflow import ToolCall
 
+
+def _to_openai_usage(usage: dict[str, Any] | None) -> dict[str, int]:
+    """Convert usage dict to OpenAI keys."""
+    if not usage:
+        return {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    return {
+        "prompt_tokens": usage.get("prompt_tokens", 0),
+        "completion_tokens": usage.get("completion_tokens", 0),
+        "total_tokens": usage.get("total_tokens", 0),
+    }
+
 # ── Inbound: OpenAI request → forge Messages ─────────────────────
 
 
@@ -139,7 +150,7 @@ def tool_calls_to_openai(
                 "finish_reason": "tool_calls",
             }
         ],
-        "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": _to_openai_usage(usage),
     }
 
 
@@ -163,7 +174,7 @@ def text_response_to_openai(
                 "finish_reason": "stop",
             }
         ],
-        "usage": usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "usage": _to_openai_usage(usage),
     }
 
 
@@ -254,7 +265,7 @@ def tool_calls_to_sse_events(
             "id": cmpl_id,
             "object": "chat.completion.chunk",
             "model": model,
-            "usage": usage,
+            "usage": _to_openai_usage(usage),
         })
 
     return events
@@ -321,7 +332,7 @@ def text_to_sse_events(
             "id": cmpl_id,
             "object": "chat.completion.chunk",
             "model": model,
-            "usage": usage,
+            "usage": _to_openai_usage(usage),
         })
 
     return events

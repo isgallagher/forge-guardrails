@@ -62,6 +62,25 @@ This means rescue parsing (Mistral `[TOOL_CALLS]`, Qwen `<tool_call>` XML, fence
 
 The client adapter is the abstraction boundary: it owns the wire format, the serialization, and the response parsing. Everything above it works with forge's canonical types (`ToolCall`, `TextResponse`).
 
+#### Encoder / Hidden-Layers / Decoder Pattern
+
+All transformation happens at the boundaries. Internals never transform data.
+
+- **Encoder** (`src/forge/clients/`): Converts backend wire format → forge canonical types (`ToolCall`, `TextResponse`, `TokenUsage`). For example, `AnthropicClient` maps `{"input_tokens": N, "output_tokens": M}` to `TokenUsage(prompt_tokens=N, completion_tokens=M, total_tokens=N+M)`.
+- **Hidden layers** (`src/forge/core/`, `src/forge/guardrails/`): Inference loop, guardrails, context management — all use canonical types only. No format transformation.
+- **Decoder** (`src/forge/proxy/convert.py`): Converts canonical types → wire format (OpenAI/Anthropic) for the client.
+
+Data flow for token usage:
+```
+Backend raw usage → Encoder (AnthropicClient) → TokenUsage(prompt_tokens, completion_tokens, total_tokens)
+  → Hidden layers (inference, _sync_token_count, guardrails) — unchanged
+    → Decoder (convert.py) → Wire format:
+       OpenAI client: {"prompt_tokens": N, "completion_tokens": M, "total_tokens": T}
+       Anthropic client: {"input_tokens": N, "output_tokens": M}
+```
+
+**Key rule:** All transformation happens at the boundaries. Internals never transform.
+
 ### 5. Context Is a First-Class Resource
 
 Forge budgets context proactively. A long conversation with many tool calls can easily exceed the model's context window. Context management is not optional — it's load-bearing infrastructure.
