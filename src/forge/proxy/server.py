@@ -699,6 +699,7 @@ class HTTPServer:
             try:
                 await writer.drain()
             except ConnectionResetError:
+                logger.debug("Client disconnected during SSE")
                 return
 
         done = b"data: [DONE]\n\n"
@@ -708,6 +709,7 @@ class HTTPServer:
         try:
             await writer.drain()
         except ConnectionResetError:
+            logger.debug("Client disconnected during SSE terminator")
             return
         logger.debug("<< SSE complete, [DONE] sent")
 

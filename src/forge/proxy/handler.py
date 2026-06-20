@@ -65,6 +65,7 @@ def _get_usage(client: LLMClient) -> dict[str, Any] | None:
     return None
 
 
+
 def _format_response(
     response: list[ToolCall] | TextResponse | str | None,
     is_stream: bool,
@@ -285,8 +286,8 @@ async def handle_chat_completions(
         return _format_response(raw, is_stream, model_name, anthropic_backend, usage)
 
     # run_inference returns None when max_attempts exhausted
+    usage = _get_usage(client)
     if result is None:
-        usage = _get_usage(client)
         return _format_response("", is_stream, model_name, anthropic_backend, usage)
 
     tool_calls = result.response
