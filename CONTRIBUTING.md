@@ -51,7 +51,14 @@ Guardrails live in `src/forge/guardrails/` and nudge templates in `src/forge/pro
 
 ### Format conversion
 
-OpenAI ↔ Anthropic conversion lives in `src/forge/proxy/convert.py`. Add new format pairs here.
+Follow the encoder/decoder pattern:
+- **Encoder** (`src/forge/clients/`): Convert backend format → forge canonical types (`TokenUsage`, `ToolCall`)
+- **Decoder** (`src/forge/proxy/convert.py`): Convert canonical types → wire format (OpenAI/Anthropic)
+- **Never** transform in the middle — inference, guardrails, and handler code use canonical types only
+
+Add new format pairs in `src/forge/proxy/convert.py`. Each pair needs:
+- Non-streaming: `X_to_Y_response()` function
+- Streaming: `X_to_Y_sse()` function
 
 ### Client adapters
 

@@ -53,7 +53,7 @@ class AnthropicClient:
         # The Anthropic SDK manages sampling internally.
         if recommended_sampling:
             log.debug("AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed.")
-        self.last_usage: dict[str, int] | None = None
+        self.last_usage: dict[str, TokenUsage] = {}
         self._slot_id: int = 0
 
         kwargs: dict[str, Any] = {
@@ -288,10 +288,12 @@ class AnthropicClient:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
             raise BackendError(getattr(exc, "status_code", 0), str(exc)) from exc
-        self.last_usage = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-        }
+        if response.usage:
+            self.last_usage[str(self._slot_id)] = TokenUsage(
+                prompt_tokens=response.usage.input_tokens,
+                completion_tokens=response.usage.output_tokens,
+                total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+            )
         return self._parse_response(response)
 
     async def send_stream(
@@ -356,10 +358,12 @@ class AnthropicClient:
                         yield StreamChunk(type=ChunkType.FINAL, response=final)
                 # Grab usage from the final accumulated message.
                 final_message = await stream.get_final_message()
-                self.last_usage = {
-                    "input_tokens": final_message.usage.input_tokens,
-                    "output_tokens": final_message.usage.output_tokens,
-                }
+                if final_message.usage is not None:
+                    self.last_usage[str(self._slot_id)] = TokenUsage(
+                        prompt_tokens=final_message.usage.input_tokens,
+                        completion_tokens=final_message.usage.output_tokens,
+                        total_tokens=final_message.usage.input_tokens + final_message.usage.output_tokens,
+                    )
         except anthropic.APIError as exc:
             raise BackendError(getattr(exc, "status_code", 0), str(exc)) from exc
 
@@ -443,14 +447,13 @@ class AnthropicClient:
             raise BackendError(resp.status_code, resp.text)
 
         data = resp.json()
-        usage = data.get("usage", {})
-        if self.last_usage is None:
-            self.last_usage = {}
-        self.last_usage[self._slot_id] = TokenUsage(
-            prompt_tokens=usage.get("input_tokens", 0),
-            completion_tokens=usage.get("output_tokens", 0),
-            total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
-        )
+        raw_usage = data.get("usage", {})
+        if raw_usage:
+            self.last_usage[str(self._slot_id)] = TokenUsage(
+                prompt_tokens=raw_usage.get("input_tokens", 0),
+                completion_tokens=raw_usage.get("output_tokens", 0),
+                total_tokens=raw_usage.get("input_tokens", 0) + raw_usage.get("output_tokens", 0),
+            )
         return self._parse_http_response(data)
 
     async def send_http_stream(
@@ -522,14 +525,12 @@ class AnthropicClient:
                     current_tool_idx = -1
 
                 elif event_type == "message_delta":
-                    usage = event.get("usage", {})
-                    if usage:
-                        if self.last_usage is None:
-                            self.last_usage = {}
-                        self.last_usage[self._slot_id] = TokenUsage(
-                            prompt_tokens=usage.get("input_tokens", 0),
-                            completion_tokens=usage.get("output_tokens", 0),
-                            total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                    raw_usage = event.get("usage", {})
+                    if raw_usage:
+                        self.last_usage[str(self._slot_id)] = TokenUsage(
+                            prompt_tokens=raw_usage.get("input_tokens", 0),
+                            completion_tokens=raw_usage.get("output_tokens", 0),
+                            total_tokens=raw_usage.get("input_tokens", 0) + raw_usage.get("output_tokens", 0),
                         )
 
                 elif event_type == "message_stop":
