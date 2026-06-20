@@ -694,13 +694,21 @@ class HTTPServer:
             event_line = f"event: {event_type}\n" if event_type else ""
             body = f"{event_line}{data_line}\n".encode()
             writer.write(f"{len(body):x}\r\n".encode() + body + b"\r\n")
-            await writer.drain()
+            try:
+                await writer.drain()
+            except ConnectionResetError:
+                logger.debug("Client disconnected during SSE")
+                return
 
         done = b"data: [DONE]\n\n"
         writer.write(f"{len(done):x}\r\n".encode() + done + b"\r\n")
         # Terminating zero-length chunk
         writer.write(b"0\r\n\r\n")
-        await writer.drain()
+        try:
+            await writer.drain()
+        except ConnectionResetError:
+            logger.debug("Client disconnected during SSE terminator")
+            return
         logger.debug("<< SSE complete, [DONE] sent")
 
     async def _send_error(
