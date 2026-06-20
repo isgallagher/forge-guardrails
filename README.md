@@ -1,38 +1,46 @@
-# forge
+# forge-guardrails
 
 [![PyPI](https://img.shields.io/pypi/v/forge-guardrails.svg)](https://pypi.org/project/forge-guardrails/)
 [![Tests](https://github.com/isgallagher/forge-guardrails/actions/workflows/tests.yml/badge.svg)](https://github.com/isgallagher/forge-guardrails/actions/workflows/tests.yml)
-[![codecov](https://codecov.io/gh/isgallagher/forge-guardrails/branch/main/graph/badge.svg)](https://codecov.io/gh/isgallagher/forge-guardrails)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
 A transparent guardrails proxy for LLM tool-calling. Forge sits between any client (Claude Code, Continue, opencode, etc.) and any backend (Anthropic API, llama-server, vLLM, Ollama) and applies response validation, rescue parsing, retry nudges, and context compaction — so the client thinks it's talking to a more reliable model.
 
-Forge takes an 8B local model from single digits to 84% across forge's eval suite — and even lifts Sonnet 4.6 from 85% to 98% on the same workload.
-
 **What forge isn't:**
+- **Not an inference engine.** Forge does not run models. All inference is handled by a separate backend that Forge proxies to.
 - **Not an agent orchestrator.** Forge sits inside one agentic loop and makes its tool calls reliable. Multi-agent graphs, DAG planners, and cross-agent coordination are out of scope.
 - **Not a coding harness.** Forge is domain-agnostic. It lifts your existing agent harness with guardrails — no rewrite.
 
-**Architecture:**
+## How It Works
 
-Forge is a guardrails layer that sits between clients and LLM backends. It uses direct HTTP pass-through (no SDK required) so it works without API keys — the backend handles authentication.
+Forge is a drop-in proxy that speaks OpenAI-compatible and Anthropic APIs. It automatically detects which formats your backend supports and translates between client and backend formats as needed.
+
+```
+Client (Claude Code, Continue, etc.)
+  │
+  ▼
+Forge Proxy (port 8081)
+  │  • Validates tool calls against request schema
+  │  • Rescues malformed tool calls (JSON fences, XML, etc.)
+  │  • Retries with corrective nudges on validation failure
+  │  • Injects synthetic `respond` tool for conversational turns
+  │  • Compacts context when approaching budget
+  │  • Translates OpenAI ↔ Anthropic format automatically
+  ▼
+Backend (llama-server, vLLM, Anthropic API, etc.)
+```
+
+### Request Flow
 
 - **Same format** (OpenAI client → OpenAI backend, Anthropic → Anthropic): requests pass through directly
-- **Different format**: forge translates using conversion functions in `convert.py`
+- **Different format**: forge translates using conversion functions
 - **With tools**: all requests go through guardrails (validate, retry, nudge, step enforcement)
 - **Without tools**: requests pass through to the backend directly, skipping guardrails
 
-No API keys needed — the backend handles authentication. Forge uses `httpx` for all HTTP communication.
+### Backend Detection
 
-**How it works:**
-
-On every `POST /v1/chat/completions`, forge applies (in order):
-
-1. **Response validation** — each tool call is checked against the `tools` array in the request. Calls to unknown tool names or with malformed shapes are caught.
-2. **Rescue parsing** — when the model emits tool calls in the wrong format (JSON in a code fence, Mistral's `[TOOL_CALLS]name{args}`, Qwen's `<tool_call>...</tool_call>` XML), forge extracts the structured call.
-3. **Retry loop** — if validation fails, forge retries inference up to `--max-retries` (default 3) with a corrective tool-result message.
-4. **Synthetic `respond` tool injection** — when tools are present, forge injects a `respond` tool the model calls instead of producing bare text. The call is stripped from the outbound response.
+Forge probes the backend on startup to determine which API formats it supports (OpenAI, Anthropic, or both). It then routes and translates requests accordingly — no configuration needed.
 
 ## Install
 
@@ -52,7 +60,7 @@ llama-server -m path/to/model.gguf --jinja -ngl 999 --port 8080
 Start the forge proxy:
 
 ```bash
-forge-proxy --backend-url http://localhost:8080/v1 --port 8081
+forge-proxy --backend-url http://localhost:8080 --port 8081
 ```
 
 Then configure your client to use `http://localhost:8081/v1` as the API base URL.
@@ -63,7 +71,7 @@ Then configure your client to use `http://localhost:8081/v1` as the API base URL
 from forge.proxy import ProxyServer
 
 proxy = ProxyServer(
-    backend_url="http://localhost:8080/v1",
+    backend_url="http://localhost:8080",
     backend_type="openai",  # or "anthropic"
     port=8081,
 )
@@ -75,7 +83,7 @@ proxy.start()
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--backend-url` | (required) | URL of the backend to proxy |
+| `--backend-url` | (required) | URL of the backend to proxy (clean base URL, no /v1 suffix) |
 | `--backend-type` | `anthropic` | Backend API format: `anthropic` or `openai` |
 | `--max-retries N` | 3 | Retry budget per validation failure |
 | `--no-rescue` | (rescue on) | Disable rescue parsing |
@@ -87,7 +95,7 @@ proxy.start()
 
 | Variable | Default | Description |
 |---|---|---|
-| `BACKEND_URL` | — | Backend URL (required) |
+| `BACKEND_URL` | — | Backend URL (clean base URL, no /v1 suffix) |
 | `BACKEND_TYPE` | `anthropic` | `anthropic` or `openai` |
 | `HOST` | `127.0.0.1` | Proxy bind host |
 | `PORT` | `8081` | Proxy listen port |
@@ -100,7 +108,7 @@ proxy.start()
 
 ```bash
 docker run -p 8081:8081 \
-  -e BACKEND_URL=http://host.docker.internal:8080/v1 \
+  -e BACKEND_URL=http://host.docker.internal:8080 \
   -e BACKEND_TYPE=openai \
   ghcr.io/isgallagher/forge-guardrails:main
 ```
@@ -145,8 +153,7 @@ tests/
 
 ## Documentation
 
-- [Architecture](docs/ARCHITECTURE.md) — Full design document
-- [User Guide](docs/USER_GUIDE.md) — Usage patterns, context management, guardrails
+- [Architecture](docs/ARCHITECTURE.md) — Design principles and guardrail rationale
 - [Contributing](CONTRIBUTING.md) — How to set up, test, and contribute
 
 ## Paper
@@ -155,8 +162,6 @@ The forge guardrail framework and ablation study are published as:
 
 > Zambelli, A. *Forge: A Reliability Layer for Self-Hosted LLM Tool-Calling.*
 > [https://doi.org/10.1145/3786335.3813193](https://doi.org/10.1145/3786335.3813193)
-
-A pre-publication preprint is available at [docs/forge_ieee_preprint.pdf](docs/forge_ieee_preprint.pdf).
 
 ## License
 
