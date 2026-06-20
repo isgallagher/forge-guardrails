@@ -13,8 +13,9 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import anthropic
+import httpx
 
-from forge.clients.base import ChunkType, StreamChunk
+from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
 from forge.core.workflow import LLMResponse, TextResponse, ToolCall, ToolSpec
 from forge.errors import BackendError
 
@@ -52,6 +53,9 @@ class AnthropicClient:
         # The Anthropic SDK manages sampling internally.
         if recommended_sampling:
             log.debug("AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed.")
+        self.last_usage: dict[str, int] | None = None
+        self._slot_id: int = 0
+
         kwargs: dict[str, Any] = {
             "api_key": api_key,
             "timeout": timeout,
@@ -59,6 +63,11 @@ class AnthropicClient:
         }
         if base_url is not None:
             kwargs["base_url"] = base_url
+            self._http = httpx.AsyncClient(
+                base_url=base_url,
+                headers={"anthropic-version": "2023-06-01", "Content-Type": "application/json"},
+                timeout=timeout,
+            )
         else:
             # The Anthropic SDK reads ANTHROPIC_BASE_URL from env. When
             # the user does not provide an explicit base_url we must
@@ -68,10 +77,9 @@ class AnthropicClient:
             self._client = anthropic.AsyncAnthropic(**kwargs)
             if _saved is not None:
                 os.environ["ANTHROPIC_BASE_URL"] = _saved
+            self._http = None  # type: ignore[assignment]
             return
         self._client = anthropic.AsyncAnthropic(**kwargs)
-        # Populated after each send()/send_stream() call.
-        self.last_usage: dict[str, int] | None = None
 
     # ── Tool schema conversion ───────────────────────────────────
 
@@ -244,11 +252,12 @@ class AnthropicClient:
         messages: list[dict[str, Any]],
         tools: list[ToolSpec] | None,
         max_tokens: int | None = None,
+        model: str | None = None,
     ) -> dict[str, Any]:
         """Build kwargs dict for messages.create / messages.stream."""
         system, converted = self._convert_messages(messages)
         kwargs: dict[str, Any] = {
-            "model": self.model,
+            "model": model or self.model,
             "messages": converted,
             "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
@@ -273,12 +282,8 @@ class AnthropicClient:
         AnthropicClient does not currently expose sampling kwargs through
         forge.
         """
-        if sampling:
-            log.debug(
-                "AnthropicClient ignores per-call sampling overrides: %s",
-                sorted(sampling.keys()),
-            )
-        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens)
+        model = sampling.get("model") if sampling else None
+        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens, model=model)
         try:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
@@ -300,12 +305,8 @@ class AnthropicClient:
 
         ``sampling`` is accepted for protocol symmetry but ignored.
         """
-        if sampling:
-            log.debug(
-                "AnthropicClient ignores per-call sampling overrides: %s",
-                sorted(sampling.keys()),
-            )
-        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens)
+        model = sampling.get("model") if sampling else None
+        kwargs = self._build_kwargs(messages, tools, max_tokens=max_tokens, model=model)
 
         accumulated_text = ""
         # Track multiple tool_use blocks by index.
@@ -365,3 +366,335 @@ class AnthropicClient:
     async def get_context_length(self) -> int | None:
         """Claude models have 200K context."""
         return 200_000
+
+    # ── HTTP methods (SDK-free, for proxy mode) ──────────────────
+
+    def _build_request_body(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSpec] | None,
+        max_tokens: int | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        """Build a raw JSON body for POST /v1/messages."""
+        system, converted = self._convert_messages(messages)
+        body: dict[str, Any] = {
+            "model": model or self.model,
+            "messages": converted,
+        }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        elif self.max_tokens:
+            body["max_tokens"] = self.max_tokens
+        if system:
+            body["system"] = system
+        if tools:
+            body["tools"] = self._convert_tools(tools)
+            if self._tool_choice:
+                body["tool_choice"] = {"type": self._tool_choice}
+        return body
+
+    @staticmethod
+    def _parse_http_response(data: dict[str, Any]) -> LLMResponse:
+        """Parse a raw Anthropic JSON response into LLMResponse."""
+        tool_uses: list[dict[str, Any]] = []
+        text_parts: list[str] = []
+
+        for block in data.get("content", []):
+            if block.get("type") == "tool_use":
+                tool_uses.append(block)
+            elif block.get("type") == "text":
+                text_parts.append(block.get("text", ""))
+
+        if tool_uses:
+            reasoning = "\n".join(text_parts) if text_parts else None
+            return [
+                ToolCall(
+                    tool=tu["name"],
+                    args=tu.get("input", {}),
+                    reasoning=reasoning if i == 0 else None,
+                )
+                for i, tu in enumerate(tool_uses)
+            ]
+        return TextResponse(content="\n".join(text_parts))
+
+    async def send_http(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+    ) -> LLMResponse:
+        """Send messages via direct HTTP to the Anthropic Messages API.
+
+        Bypasses the SDK entirely — used in proxy mode where the backend
+        handles authentication and no API key is available.
+        """
+        if sampling:
+            log.debug(
+                "AnthropicClient.send_http ignores per-call sampling overrides: %s",
+                sorted(sampling.keys()),
+            )
+        model = sampling.get("model") if sampling else None
+        body = self._build_request_body(messages, tools, max_tokens=max_tokens, model=model)
+
+        resp = await self._http.post("/v1/messages", json=body)
+        if resp.status_code != 200:
+            raise BackendError(resp.status_code, resp.text)
+
+        data = resp.json()
+        usage = data.get("usage", {})
+        if self.last_usage is None:
+            self.last_usage = {}
+        self.last_usage[self._slot_id] = TokenUsage(
+            prompt_tokens=usage.get("input_tokens", 0),
+            completion_tokens=usage.get("output_tokens", 0),
+            total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+        )
+        return self._parse_http_response(data)
+
+    async def send_http_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[ToolSpec] | None = None,
+        sampling: dict[str, Any] | None = None,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Stream via direct HTTP to the Anthropic Messages API.
+
+        Bypasses the SDK entirely — used in proxy mode where the backend
+        handles authentication and no API key is available.
+        """
+        model = sampling.get("model") if sampling else None
+        body = self._build_request_body(messages, tools, max_tokens=max_tokens, model=model)
+        body["stream"] = True
+
+        accumulated_text = ""
+        tool_blocks: list[dict[str, str]] = []
+        current_tool_idx: int = -1
+
+        async with self._http.stream("POST", "/v1/messages", json=body) as resp:
+            if resp.status_code != 200:
+                error_text = await resp.aread()
+                raise BackendError(resp.status_code, error_text.decode("utf-8", errors="replace"))
+
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                payload = line[6:].strip()
+                if not payload:
+                    continue
+                try:
+                    event = json.loads(payload)
+                except json.JSONDecodeError:
+                    continue
+
+                event_type = event.get("type")
+
+                if event_type == "content_block_start":
+                    cb = event.get("content_block", {})
+                    if cb.get("type") == "tool_use":
+                        tool_blocks.append({
+                            "name": cb.get("name", ""),
+                            "args": "",
+                        })
+                        current_tool_idx = len(tool_blocks) - 1
+
+                elif event_type == "content_block_delta":
+                    delta = event.get("delta", {})
+                    if delta.get("type") == "text_delta":
+                        text = delta.get("text", "")
+                        accumulated_text += text
+                        yield StreamChunk(
+                            type=ChunkType.TEXT_DELTA,
+                            content=text,
+                        )
+                    elif delta.get("type") == "input_json_delta" and current_tool_idx >= 0:
+                        partial = delta.get("partial_json", "")
+                        tool_blocks[current_tool_idx]["args"] += partial
+                        yield StreamChunk(
+                            type=ChunkType.TOOL_CALL_DELTA,
+                            content=partial,
+                        )
+
+                elif event_type == "content_block_stop":
+                    current_tool_idx = -1
+
+                elif event_type == "message_delta":
+                    usage = event.get("usage", {})
+                    if usage:
+                        if self.last_usage is None:
+                            self.last_usage = {}
+                        self.last_usage[self._slot_id] = TokenUsage(
+                            prompt_tokens=usage.get("input_tokens", 0),
+                            completion_tokens=usage.get("output_tokens", 0),
+                            total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                        )
+
+                elif event_type == "message_stop":
+                    if tool_blocks:
+                        reasoning = accumulated_text or None
+                        final: LLMResponse = [
+                            ToolCall(
+                                tool=tb["name"],
+                                args=json.loads(tb["args"]) if tb["args"] else {},
+                                reasoning=reasoning if i == 0 else None,
+                            )
+                            for i, tb in enumerate(tool_blocks)
+                        ]
+                    else:
+                        final = TextResponse(content=accumulated_text)
+                    yield StreamChunk(type=ChunkType.FINAL, response=final)
+
+    # ── Pass-through methods ─────────────────────────────────────
+
+    async def send_raw(self, body: dict[str, Any]) -> dict[str, Any]:
+        """Send a raw Anthropic API body directly to the backend.
+
+        Used for pass-through when the client sends Anthropic format
+        and the backend supports Anthropic natively.
+        """
+        try:
+            response = await self._client.messages.create(**body)
+        except anthropic.APIError as exc:
+            raise BackendError(getattr(exc, "status_code", 0), str(exc)) from exc
+
+        content_blocks: list[dict[str, Any]] = []
+        for block in response.content:
+            if block.type == "tool_use":
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": block.id,
+                    "name": block.name,
+                    "input": dict(block.input),
+                })
+            elif block.type == "text":
+                content_blocks.append({"type": "text", "text": block.text})
+
+        return {
+            "id": response.id,
+            "type": "message",
+            "role": "assistant",
+            "model": response.model,
+            "content": content_blocks,
+            "stop_reason": response.stop_reason,
+            "stop_sequence": response.stop_sequence,
+            "usage": {
+                "input_tokens": response.usage.input_tokens,
+                "output_tokens": response.usage.output_tokens,
+            },
+        }
+
+    async def send_raw_stream(
+        self,
+        body: dict[str, Any],
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream a raw Anthropic API body directly to the backend.
+
+        Yields Anthropic-format SSE events as they arrive.
+        """
+        message_id: str | None = None
+        model_name: str | None = None
+        text_started = False
+        tool_blocks: list[dict[str, str]] = []
+        current_tool_idx: int = -1
+
+        try:
+            async with self._client.messages.stream(**body) as stream:
+                async for event in stream:
+                    if event.type == "message_start":
+                        message_id = event.id
+                        model_name = event.model
+                        yield {
+                            "type": "message_start",
+                            "id": message_id,
+                            "model": model_name,
+                            "message": {
+                                "id": message_id,
+                                "type": "message",
+                                "role": "assistant",
+                                "model": model_name,
+                                "content": [],
+                                "stop_reason": "end_turn",
+                                "stop_sequence": None,
+                                "usage": {"input_tokens": 0, "output_tokens": 0},
+                            },
+                        }
+
+                    elif event.type == "content_block_start":
+                        if event.content_block.type == "tool_use":
+                            tool_blocks.append({"name": event.content_block.name, "args": ""})
+                            current_tool_idx = len(tool_blocks) - 1
+                            yield {
+                                "type": "content_block_start",
+                                "index": current_tool_idx,
+                                "content_block": {
+                                    "type": "tool_use",
+                                    "name": event.content_block.name,
+                                    "id": "",
+                                    "input": {},
+                                },
+                                "id": message_id,
+                                "model": model_name,
+                            }
+                        else:
+                            if not text_started:
+                                yield {
+                                    "type": "content_block_start",
+                                    "index": 0,
+                                    "content_block": {"type": "text", "text": ""},
+                                    "id": message_id,
+                                    "model": model_name,
+                                }
+                                text_started = True
+
+                    elif event.type == "content_block_delta":
+                        if event.delta.type == "text_delta":
+                            yield {
+                                "type": "content_block_delta",
+                                "index": 0,
+                                "delta": {"type": "text_delta", "text": event.delta.text},
+                                "id": message_id,
+                                "model": model_name,
+                            }
+                        elif event.delta.type == "input_json_delta" and current_tool_idx >= 0:
+                            tool_blocks[current_tool_idx]["args"] += event.delta.partial_json
+                            yield {
+                                "type": "content_block_delta",
+                                "index": current_tool_idx,
+                                "delta": {"type": "input_json_delta", "partial_json": event.delta.partial_json},
+                                "id": message_id,
+                                "model": model_name,
+                            }
+
+                    elif event.type == "content_block_stop":
+                        current_tool_idx = -1
+                        yield {
+                            "type": "content_block_stop",
+                            "index": 0,
+                            "id": message_id,
+                            "model": model_name,
+                        }
+
+                    elif event.type == "message_stop":
+                        final_msg = await stream.get_final_message()
+                        yield {
+                            "type": "message_stop",
+                            "stop_reason": final_msg.stop_reason,
+                            "id": message_id,
+                            "model": model_name,
+                            "usage": {
+                                "input_tokens": final_msg.usage.input_tokens,
+                                "output_tokens": final_msg.usage.output_tokens,
+                            },
+                        }
+
+        except anthropic.APIError as exc:
+            raise BackendError(getattr(exc, "status_code", 0), str(exc)) from exc
+
+    async def aclose(self) -> None:
+        """Close the underlying HTTP clients."""
+        await self._client.aclose()
+        if self._http is not None:
+            await self._http.aclose()

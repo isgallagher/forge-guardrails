@@ -17,18 +17,27 @@ import httpx
 
 from forge.clients.base import LLMClient
 from forge.context.manager import ContextManager
-from forge.proxy.handler import handle_chat_completions, handle_messages
 from forge.proxy.convert import (
-    anthropic_models_to_openai,
-    openai_models_to_anthropic,
     ollama_models_to_anthropic,
-    ollama_models_to_openai,
+    openai_models_to_anthropic,
+)
+from forge.proxy.handler import (
+    _PassthroughStream,
+    handle_chat_completions,
+    handle_messages,
 )
 
 logger = logging.getLogger("forge.proxy")
 
 # Maximum request body size (16 MB)
 _MAX_BODY = 16 * 1024 * 1024
+
+
+@dataclass(frozen=True)
+class BackendCapabilities:
+    """Formats that the backend supports."""
+    supports_anthropic: bool
+    supports_openai: bool
 
 
 @dataclass
@@ -65,8 +74,9 @@ class HTTPServer:
         self._queue: asyncio.Queue[_QueueItem | None] = asyncio.Queue()
         self._worker_task: asyncio.Task | None = None
         self._shutdown_event: asyncio.Event | None = None
-        self._models_cache: dict[bool, bool] = {}
-        self._http = httpx.AsyncClient(timeout=10.0)
+        self._capabilities: BackendCapabilities | None = None
+        self._http = httpx.AsyncClient(timeout=120.0)
+        self._probe_http = httpx.AsyncClient(timeout=60.0)
 
     async def start(self) -> None:
         """Start listening for connections."""
@@ -79,6 +89,16 @@ class HTTPServer:
             self._port,
         )
         logger.info("Proxy listening on %s:%d", self._host, self._port)
+
+        # Probe backend capabilities
+        backend_url = getattr(self._client, "backend_url", None)
+        if isinstance(backend_url, str):
+            self._capabilities = await self._probe_backend_capabilities(backend_url)
+            logger.info("Backend capabilities: anthropic=%s openai=%s",
+                        self._capabilities.supports_anthropic,
+                        self._capabilities.supports_openai)
+        else:
+            self._capabilities = None
 
     async def stop(self) -> None:
         """Stop the server gracefully."""
@@ -105,8 +125,101 @@ class HTTPServer:
                 pass
             self._worker_task = None
 
-        # 5. Close HTTP client used for models endpoint
+        # 5. Close HTTP clients
         await self._http.aclose()
+        await self._probe_http.aclose()
+
+    async def _probe_backend_capabilities(self, backend_url: str) -> BackendCapabilities:
+        """Probe the backend to determine which API formats it supports."""
+        # Fetch available models so we can use a real model name.
+        # Aperture-style gateways return 404 for unknown models even on valid endpoints.
+        model_name = await self._fetch_first_model(backend_url)
+
+        supports_anthropic = await self._probe_endpoint(
+            backend_url,
+            "/v1/messages",
+            {"anthropic-version": "2023-06-01"},
+            {
+                "model": model_name,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1,
+            },
+        )
+        supports_openai = await self._probe_endpoint(
+            backend_url,
+            "/v1/chat/completions",
+            {},
+            {
+                "model": model_name,
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 1,
+            },
+        )
+        return BackendCapabilities(supports_anthropic, supports_openai)
+
+    async def _fetch_first_model(self, backend_url: str) -> str:
+        """Try to get a real model name from the backend's models endpoint.
+
+        Falls back to a hardcoded model if the endpoint is unavailable.
+        """
+        models_url = self._models_endpoint(backend_url)
+        try:
+            resp = await self._probe_http.get(models_url)
+            if resp.status_code == 200:
+                data = resp.json()
+                # OpenAI format
+                models = data.get("data", [])
+                if models and isinstance(models, list):
+                    return models[0].get("id", "")
+                # Anthropic format
+                models = data.get("data", [])
+                if models and isinstance(models, list):
+                    return models[0].get("id", "")
+        except Exception:
+            pass
+        # Fallback: try common model names
+        return "gemma-4-26b"
+
+    async def _probe_endpoint(
+        self,
+        backend_url: str,
+        path: str,
+        headers: dict[str, str],
+        body: dict[str, Any],
+    ) -> bool:
+        """Probe a single endpoint. Returns True if the endpoint is reachable."""
+        url = backend_url.rstrip("/") + path
+        try:
+            resp = await self._probe_http.post(url, json=body, headers=headers or None)
+            return resp.status_code != 404
+        except Exception:
+            return False
+
+    async def _forward_stream(
+        self,
+        writer: asyncio.StreamWriter,
+        path: str,
+        body: dict[str, Any],
+        headers: dict[str, str] | None = None,
+    ) -> None:
+        """Forward a backend SSE stream directly to the client."""
+        await self._send_sse_header(writer)
+        backend_url = getattr(self._client, "backend_url", None) or ""
+        url = backend_url.rstrip("/") + path
+        try:
+            async with self._http.stream("POST", url, json=body, headers=headers) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if writer.is_closing():
+                        return
+                    if line.strip() and not line.startswith(":"):
+                        writer.write(line.encode() + b"\r\n")
+                        await writer.drain()
+                writer.write(b"\r\n")
+                await writer.drain()
+        except Exception as exc:
+            logger.exception("Stream forward error")
+            await self._send_error(writer, 502, str(exc))
 
     async def _inference_worker(self) -> None:
         """Single worker that pulls requests off the queue and processes them.
@@ -226,7 +339,7 @@ class HTTPServer:
         await self._send_json(writer, 200, body)
 
     async def _handle_models(self, writer: asyncio.StreamWriter, headers: dict[str, str]) -> None:
-        """GET /v1/models — probes backend, caches result, converts format."""
+        """GET /v1/models — fetches models, converts format if needed."""
         want_anthropic = "anthropic-version" in headers
 
         # Access client attributes via getattr for safety with mocks
@@ -242,19 +355,37 @@ class HTTPServer:
             await self._send_json(writer, 200, body)
             return
 
-        cache_key = want_anthropic
+        # Use capabilities to determine which endpoint to try first
         try:
-            supports_natively = self._models_cache.get(cache_key)
-            if supports_natively is None:
-                supports_natively = await self._probe_models_format(
-                    backend_url, native_format, want_anthropic,
-                )
-                self._models_cache[cache_key] = supports_natively
-
-            data = await self._fetch_models(
-                backend_url, native_format, want_anthropic, supports_natively,
-            )
-            await self._send_json(writer, 200, json.dumps(data))
+            if self._capabilities:
+                # Prefer the format matching the client's request
+                if want_anthropic and self._capabilities.supports_anthropic:
+                    url = self._models_endpoint(backend_url)
+                    resp = await self._http.get(url, headers={"anthropic-version": "2023-06-01"})
+                    resp.raise_for_status()
+                    await self._send_json(writer, 200, json.dumps(resp.json()))
+                    return
+                elif self._capabilities.supports_openai:
+                    url = self._models_endpoint(backend_url)
+                    resp = await self._http.get(url)
+                    resp.raise_for_status()
+                    if want_anthropic:
+                        await self._send_json(writer, 200, json.dumps(openai_models_to_anthropic(resp.json())))
+                    else:
+                        await self._send_json(writer, 200, json.dumps(resp.json()))
+                    return
+            # Fallback: fetch in native format, convert if needed
+            url = self._native_models_endpoint(backend_url, native_format)
+            resp = await self._http.get(url)
+            resp.raise_for_status()
+            native_data = resp.json()
+            if want_anthropic and native_format in ("openai", "ollama"):
+                if native_format == "ollama":
+                    await self._send_json(writer, 200, json.dumps(ollama_models_to_anthropic(native_data)))
+                else:
+                    await self._send_json(writer, 200, json.dumps(openai_models_to_anthropic(native_data)))
+            else:
+                await self._send_json(writer, 200, json.dumps(native_data))
         except Exception:
             logger.exception("Models endpoint fallback")
             body = json.dumps({
@@ -263,82 +394,13 @@ class HTTPServer:
             })
             await self._send_json(writer, 200, body)
 
-    async def _probe_models_format(
-        self,
-        backend_url: str,
-        native_format: str,
-        want_anthropic: bool,
-    ) -> bool:
-        """Probe the backend to see if it supports the requested format.
-
-        Returns True if the backend supports the format natively, False otherwise.
-        """
-        url = self._models_endpoint(backend_url)
-        headers = {}
-        if want_anthropic:
-            headers["anthropic-version"] = "2023-06-01"
-
-        try:
-            resp = await self._http.get(url, headers=headers or None)
-            if resp.status_code == 200:
-                return True
-            if resp.status_code == 404:
-                return False
-        except Exception:
-            pass
-        # On error, assume it doesn't support the format → will try native
-        return False
-
-    async def _fetch_models(
-        self,
-        backend_url: str,
-        native_format: str,
-        want_anthropic: bool,
-        supports_natively: bool,
-    ) -> dict[str, Any]:
-        """Fetch models from the backend, converting format if needed."""
-        if supports_natively:
-            # Fetch in requested format, passthrough
-            url = self._models_endpoint(backend_url)
-            headers = {}
-            if want_anthropic:
-                headers["anthropic-version"] = "2023-06-01"
-            resp = await self._http.get(url, headers=headers or None)
-            resp.raise_for_status()
-            return resp.json()
-
-        # Fetch in native format, convert
-        url = self._native_models_endpoint(backend_url, native_format)
-        resp = await self._http.get(url)
-        resp.raise_for_status()
-        native_data = resp.json()
-
-        if native_format == "ollama":
-            if want_anthropic:
-                return ollama_models_to_anthropic(native_data)
-            return ollama_models_to_openai(native_data)
-        elif native_format == "openai":
-            if want_anthropic:
-                return openai_models_to_anthropic(native_data)
-            return native_data
-        elif native_format == "anthropic":
-            if want_anthropic:
-                return native_data
-            return anthropic_models_to_openai(native_data)
-
-        # Unknown format, return fallback
-        return {"object": "list", "data": [{"id": "forge", "object": "model"}]}
-
     @staticmethod
     def _models_endpoint(backend_url: str) -> str:
         """Build the /v1/models endpoint URL for probing.
 
         Both Anthropic and OpenAI use /v1/models, so the same URL applies.
         """
-        base = backend_url.rstrip("/")
-        if base.endswith("/v1"):
-            return f"{base}/models"
-        return f"{base}/v1/models"
+        return backend_url.rstrip("/") + "/v1/models"
 
     @staticmethod
     def _native_models_endpoint(backend_url: str, native_format: str) -> str:
@@ -346,17 +408,7 @@ class HTTPServer:
         base = backend_url.rstrip("/")
         if native_format == "ollama":
             return f"{base}/api/tags"
-        elif native_format == "openai":
-            if base.endswith("/v1"):
-                return f"{base}/models"
-            return f"{base}/v1/models"
-        elif native_format == "anthropic":
-            if base.endswith("/v1"):
-                return f"{base}/models"
-            return f"{base}/v1/models"
-        # Default: OpenAI-style
-        if base.endswith("/v1"):
-            return f"{base}/models"
+        # openai, anthropic, or default
         return f"{base}/v1/models"
 
     async def _handle_completions(
@@ -382,6 +434,14 @@ class HTTPServer:
             body.get("model", "?"),
         )
 
+        # Streaming pass-through: forward backend SSE directly, skip queue
+        if is_stream and self._capabilities and self._capabilities.supports_openai and tool_count == 0:
+            await self._send_sse_header(writer)
+            result = await self._run_handler(body)
+            if isinstance(result, _PassthroughStream):
+                await self._forward_stream(writer, result.path, result.body, result.headers)
+            return
+
         if self._serialize:
             # Queue the request and wait for the worker to process it
             item = _QueueItem(body=body)
@@ -401,7 +461,8 @@ class HTTPServer:
         else:
             if is_stream:
                 await self._send_sse_header(writer)
-            result = await self._run_handler(body)
+            # Run handler with disconnect monitoring
+            result = await self._await_handler_with_disconnect(body, self._run_handler, writer)
 
         if result is None:
             # Client disconnected
@@ -447,6 +508,14 @@ class HTTPServer:
             body.get("model", "?"),
         )
 
+        # Streaming pass-through: forward backend SSE directly, skip queue
+        if is_stream and self._capabilities and self._capabilities.supports_anthropic and tool_count == 0:
+            await self._send_sse_header(writer)
+            result = await self._run_anthropic_handler(body)
+            if isinstance(result, _PassthroughStream):
+                await self._forward_stream(writer, result.path, result.body, result.headers)
+            return
+
         if self._serialize:
             item = _QueueItem(body=body, handler_func=self._run_anthropic_handler)
             queue_depth = self._queue.qsize()
@@ -461,7 +530,8 @@ class HTTPServer:
         else:
             if is_stream:
                 await self._send_sse_header(writer)
-            result = await self._run_anthropic_handler(body)
+            # Run handler with disconnect monitoring
+            result = await self._await_handler_with_disconnect(body, self._run_anthropic_handler, writer)
 
         if result is None:
             logger.debug("<< Client disconnected, discarding result")
@@ -496,6 +566,7 @@ class HTTPServer:
                 max_retries=self._max_retries,
                 rescue_enabled=self._rescue_enabled,
                 anthropic_backend=True,
+                backend_supports_anthropic=self._capabilities.supports_anthropic if self._capabilities else False,
             )
         except Exception as exc:
             logger.exception("Handler error")
@@ -528,6 +599,35 @@ class HTTPServer:
                 break
         return item.future.result()
 
+    async def _await_handler_with_disconnect(
+        self,
+        body: dict[str, Any],
+        handler_func: Any,
+        writer: asyncio.StreamWriter,
+    ) -> dict[str, Any] | list[dict[str, Any]] | Exception | None:
+        """Run a handler directly while monitoring for client disconnect."""
+        handler_task = asyncio.create_task(handler_func(body))
+        while not handler_task.done():
+            if writer.is_closing():
+                handler_task.cancel()
+                logger.debug("   Client disconnected, cancelling handler")
+                return None
+            if self._shutdown_event is not None and self._shutdown_event.is_set():
+                handler_task.cancel()
+                logger.debug("   Server shutting down, discarding in-flight result")
+                return None
+            done, _ = await asyncio.wait(
+                [handler_task],
+                timeout=1.0,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if done:
+                break
+        try:
+            return handler_task.result()
+        except asyncio.CancelledError:
+            return None
+
     async def _run_handler(
         self,
         body: dict[str, Any],
@@ -541,6 +641,7 @@ class HTTPServer:
                 max_retries=self._max_retries,
                 rescue_enabled=self._rescue_enabled,
                 anthropic_backend=False,
+                backend_supports_openai=self._capabilities.supports_openai if self._capabilities else False,
             )
         except Exception as exc:
             logger.exception("Handler error")

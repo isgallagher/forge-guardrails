@@ -23,8 +23,7 @@ class StepTracker:
     """Tracks which required steps have been completed and which tools
     have been executed (with args) for prerequisite enforcement.
 
-    Lives on the WorkflowRunner, outside the message history.
-    Compaction cannot invalidate step completion. See P0-1.
+    Compaction cannot invalidate step completion.
     """
 
     required_steps: list[str]
