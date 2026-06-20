@@ -45,7 +45,7 @@ class ProxyServer:
     ) -> None:
         """
         Args:
-            backend_url: URL of the backend to proxy (e.g. http://localhost:8080/v1).
+            backend_url: URL of the backend to proxy (e.g. http://localhost:8080).
             backend_type: Override backend API format — "anthropic" or "openai".
                 When None, defaults to "openai" (the proxy speaks OpenAI to the
                 backend, which works for llama.cpp, vLLM, Ollama API, etc.).
@@ -142,10 +142,7 @@ class ProxyServer:
                 budget_tokens=8192,
             )
         else:
-            base = self._backend_url.rstrip("/")
-            if not base.endswith("/v1"):
-                base = base + "/v1"
-            client = OpenAICompatibleClient(base_url=base)
+            client = OpenAICompatibleClient(base_url=self._backend_url.rstrip("/"))
             context_manager = ContextManager(
                 strategy=TieredCompact(),
                 budget_tokens=8192,

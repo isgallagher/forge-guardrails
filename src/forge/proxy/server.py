@@ -75,7 +75,7 @@ class HTTPServer:
         self._worker_task: asyncio.Task | None = None
         self._shutdown_event: asyncio.Event | None = None
         self._capabilities: BackendCapabilities | None = None
-        self._http = httpx.AsyncClient(timeout=10.0)
+        self._http = httpx.AsyncClient(timeout=120.0)
         self._probe_http = httpx.AsyncClient(timeout=60.0)
 
     async def start(self) -> None:
@@ -188,11 +188,7 @@ class HTTPServer:
         body: dict[str, Any],
     ) -> bool:
         """Probe a single endpoint. Returns True if the endpoint is reachable."""
-        base = backend_url.rstrip("/")
-        if base.endswith("/v1") and path.startswith("/v1/"):
-            url = base + path[3:]
-        else:
-            url = base + path
+        url = backend_url.rstrip("/") + path
         try:
             resp = await self._probe_http.post(url, json=body, headers=headers or None)
             return resp.status_code != 404
@@ -209,11 +205,7 @@ class HTTPServer:
         """Forward a backend SSE stream directly to the client."""
         await self._send_sse_header(writer)
         backend_url = getattr(self._client, "backend_url", None) or ""
-        base = backend_url.rstrip("/")
-        if base.endswith("/v1") and path.startswith("/v1/"):
-            url = base + path[3:]
-        else:
-            url = base + path
+        url = backend_url.rstrip("/") + path
         try:
             async with self._http.stream("POST", url, json=body, headers=headers) as resp:
                 resp.raise_for_status()
@@ -408,10 +400,7 @@ class HTTPServer:
 
         Both Anthropic and OpenAI use /v1/models, so the same URL applies.
         """
-        base = backend_url.rstrip("/")
-        if base.endswith("/v1"):
-            return f"{base}/models"
-        return f"{base}/v1/models"
+        return backend_url.rstrip("/") + "/v1/models"
 
     @staticmethod
     def _native_models_endpoint(backend_url: str, native_format: str) -> str:
@@ -419,13 +408,7 @@ class HTTPServer:
         base = backend_url.rstrip("/")
         if native_format == "ollama":
             return f"{base}/api/tags"
-        elif native_format == "openai" or native_format == "anthropic":
-            if base.endswith("/v1"):
-                return f"{base}/models"
-            return f"{base}/v1/models"
-        # Default: OpenAI-style
-        if base.endswith("/v1"):
-            return f"{base}/models"
+        # openai, anthropic, or default
         return f"{base}/v1/models"
 
     async def _handle_completions(

@@ -15,13 +15,20 @@ from forge.proxy.server import HTTPServer
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _mock_client(response, backend_url=None):
+def _mock_client(response, backend_url=None, streaming=False):
     """Create a mock LLMClient that returns the given response."""
+    from forge.clients.base import ChunkType, StreamChunk
+
     client = AsyncMock()
     client.api_format = "ollama"
     client.backend_url = backend_url
     client._models_format = "openai"
     client.send_http = AsyncMock(return_value=response)
+
+    async def fake_stream(*args, **kwargs):
+        yield StreamChunk(type=ChunkType.FINAL, response=response)
+
+    client.send_http_stream = fake_stream
     return client
 
 
@@ -30,8 +37,8 @@ async def server_factory():
     """Factory fixture that creates an HTTPServer on a random port."""
     servers = []
 
-    async def _make(response, serialize=False):
-        client = _mock_client(response)
+    async def _make(response, serialize=False, streaming=False):
+        client = _mock_client(response, streaming=streaming)
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
         srv = HTTPServer(
             client=client,
@@ -252,6 +259,7 @@ class TestSSEStreaming:
     async def test_streaming_tool_call(self, server_factory):
         srv, port = await server_factory(
             [ToolCall(tool="search", args={"q": "x"})],
+            streaming=True,
         )
         body = {
             "messages": [{"role": "user", "content": "go"}],

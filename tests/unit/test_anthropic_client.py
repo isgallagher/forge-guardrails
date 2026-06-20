@@ -416,9 +416,9 @@ class TestClientConstruction:
         client = AnthropicClient(
             model="claude-sonnet-4",
             api_key="test-key",
-            base_url="http://localhost:1234/v1",
+            base_url="http://localhost:1234",
         )
-        assert str(client._client._base_url) == "http://localhost:1234/v1/"
+        assert str(client._client._base_url) == "http://localhost:1234"
 
     def test_no_base_url_by_default(self) -> None:
         """Without base_url, SDK uses default Anthropic endpoint (not env override)."""

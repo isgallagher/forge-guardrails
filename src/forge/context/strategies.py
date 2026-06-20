@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from forge.core.messages import Message, MessageMeta, MessageRole, MessageType
+from forge.core.messages import Message, MessageType
 
 
 def _estimate_tokens(messages: list[Message]) -> int:

@@ -381,8 +381,11 @@ class AnthropicClient:
         body: dict[str, Any] = {
             "model": model or self.model,
             "messages": converted,
-            "max_tokens": max_tokens if max_tokens is not None else self.max_tokens,
         }
+        if max_tokens is not None:
+            body["max_tokens"] = max_tokens
+        elif self.max_tokens:
+            body["max_tokens"] = self.max_tokens
         if system:
             body["system"] = system
         if tools:

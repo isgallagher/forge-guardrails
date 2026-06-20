@@ -1,13 +1,27 @@
-"""forge — a reusable framework for self-hosted LLM tool-calling and multi-step agentic workflows."""
+"""forge — a transparent proxy with guardrails for LLM tool-calling."""
 
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
 try:
     __version__ = _pkg_version("forge-guardrails")
 except PackageNotFoundError:
     __version__ = "0.0.0+unknown"
 
+from forge.clients.anthropic import AnthropicClient
+from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
+from forge.context import (
+    CompactEvent,
+    CompactStrategy,
+    ContextManager,
+    NoCompact,
+    SlidingWindowCompact,
+    TieredCompact,
+    default_context_warning,
+)
+from forge.core.inference import InferenceResult, fold_and_serialize, run_inference
 from forge.core.messages import Message, MessageMeta, MessageRole, MessageType, ToolCallInfo
+from forge.core.steps import StepTracker
 from forge.core.workflow import (
     LLMResponse,
     TextResponse,
@@ -16,28 +30,13 @@ from forge.core.workflow import (
     ToolSpec,
     Workflow,
 )
-from forge.core.steps import StepTracker
-from forge.core.inference import InferenceResult, fold_and_serialize, run_inference
-from forge.core.runner import WorkflowRunner
-from forge.core.slot_worker import SlotWorker
-from forge.clients.anthropic import AnthropicClient
-from forge.clients.base import ChunkType, LLMClient, StreamChunk, TokenUsage
-from forge.clients.llamafile import LlamafileClient
-from forge.clients.ollama import OllamaClient
-from forge.context import (
-    CompactEvent,
-    CompactStrategy,
-    ContextManager,
-    HardwareProfile,
-    NoCompact,
-    SlidingWindowCompact,
-    TieredCompact,
-    default_context_warning,
-    detect_hardware,
+from forge.errors import (
+    ContextBudgetExceeded,
+    ForgeError,
+    StreamError,
+    ToolCallError,
+    ToolResolutionError,
 )
-from forge.server import BudgetMode, ServerManager, setup_backend
-from forge.tools import RESPOND_TOOL_NAME, respond_spec, respond_tool
-from forge.prompts import build_tool_prompt, extract_tool_call, rescue_tool_call, retry_nudge, step_nudge
 from forge.guardrails import (
     CheckResult,
     ErrorTracker,
@@ -48,22 +47,8 @@ from forge.guardrails import (
     StepEnforcer,
     ValidationResult,
 )
-from forge.errors import (
-    BudgetResolutionError,
-    ContextBudgetExceeded,
-    ContextDiscoveryError,
-    ForgeError,
-    HardwareDetectionError,
-    MaxIterationsError,
-    PrerequisiteError,
-    StepEnforcementError,
-    StreamError,
-    ThinkingNotSupportedError,
-    ToolCallError,
-    ToolExecutionError,
-    ToolResolutionError,
-    WorkflowCancelledError,
-)
+from forge.prompts import build_tool_prompt, extract_tool_call, rescue_tool_call, retry_nudge, step_nudge
+from forge.tools import RESPOND_TOOL_NAME, respond_spec, respond_tool
 
 __all__ = [
     # Version
@@ -87,16 +72,10 @@ __all__ = [
     "InferenceResult",
     "fold_and_serialize",
     "run_inference",
-    # Runner
-    "WorkflowRunner",
-    # Slot worker
-    "SlotWorker",
     # Client
     "AnthropicClient",
     "ChunkType",
     "LLMClient",
-    "LlamafileClient",
-    "OllamaClient",
     "StreamChunk",
     "TokenUsage",
     # Context
@@ -104,21 +83,15 @@ __all__ = [
     "CompactStrategy",
     "ContextManager",
     "default_context_warning",
-    "HardwareProfile",
     "NoCompact",
     "SlidingWindowCompact",
     "TieredCompact",
-    "detect_hardware",
     # Prompts
     "build_tool_prompt",
     "extract_tool_call",
     "rescue_tool_call",
     "retry_nudge",
     "step_nudge",
-    # Server
-    "BudgetMode",
-    "ServerManager",
-    "setup_backend",
     # Built-in tools
     "RESPOND_TOOL_NAME",
     "respond_spec",
@@ -134,18 +107,9 @@ __all__ = [
     "StepEnforcer",
     "ValidationResult",
     # Errors
-    "BudgetResolutionError",
     "ContextBudgetExceeded",
-    "ContextDiscoveryError",
     "ForgeError",
-    "HardwareDetectionError",
-    "MaxIterationsError",
-    "PrerequisiteError",
-    "StepEnforcementError",
     "StreamError",
-    "ThinkingNotSupportedError",
     "ToolCallError",
-    "ToolExecutionError",
     "ToolResolutionError",
-    "WorkflowCancelledError",
 ]

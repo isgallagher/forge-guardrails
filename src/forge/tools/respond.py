@@ -7,10 +7,6 @@ correctly between text and tool calls — guiding them to a tool is a must.
 
 Usage:
 
-    WorkflowRunner consumers:
-        tools["respond"] = respond_tool()
-        workflow = Workflow(..., tools=tools, terminal_tool="respond")
-
     Proxy:
         Injected automatically. respond() calls are converted to plain
         text responses before returning to the client.
@@ -21,7 +17,6 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 from forge.core.workflow import ToolDef, ToolSpec
-
 
 RESPOND_TOOL_NAME = "respond"
 

@@ -1,4 +1,4 @@
-"""Nudge message templates for the WorkflowRunner."""
+"""Nudge message templates for retry and step enforcement."""
 
 from __future__ import annotations
 

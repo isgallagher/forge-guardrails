@@ -23,11 +23,18 @@ from forge.proxy.server import HTTPServer
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _mock_client(response):
+def _mock_client(response, streaming=False):
     """Create a mock LLMClient that returns the given response."""
+    from forge.clients.base import ChunkType, StreamChunk
+
     client = AsyncMock()
     client.api_format = "ollama"
     client.send_http = AsyncMock(return_value=response)
+
+    async def fake_stream(*args, **kwargs):
+        yield StreamChunk(type=ChunkType.FINAL, response=response)
+
+    client.send_http_stream = fake_stream
     return client
 
 
@@ -36,8 +43,8 @@ async def anthropic_proxy_server():
     """Factory that creates an HTTPServer on a random port."""
     servers = []
 
-    async def _make(response, serialize=False):
-        client = _mock_client(response)
+    async def _make(response, serialize=False, streaming=False):
+        client = _mock_client(response, streaming=streaming)
         ctx = ContextManager(strategy=NoCompact(), budget_tokens=8192)
         srv = HTTPServer(
             client=client,
@@ -261,6 +268,7 @@ class TestStreamingTools:
         """SDK streaming tool call → proxy returns tool_use SSE events."""
         _, port = await anthropic_proxy_server(
             [ToolCall(tool="fetch", args={"url": "http://example.com"})],
+            streaming=True,
         )
         client = _sdk_client(port)
 

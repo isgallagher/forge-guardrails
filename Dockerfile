@@ -9,18 +9,18 @@ WORKDIR /app
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
-    uv sync --extra anthropic --no-install-project --no-dev
+    uv sync --no-install-project --no-dev
 
 COPY pyproject.toml LICENSE README.md ./
 COPY src/ ./src/
 
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --extra anthropic --no-dev
+    uv sync --no-dev
 
 
 FROM python:3.13-alpine3.23
 LABEL org.opencontainers.image.title="Forge Proxy" \
-    org.opencontainers.image.description="A reliability layer for self-hosted LLM tool-calling" \
+    org.opencontainers.image.description="A transparent guardrails proxy for LLM tool-calling" \
     org.opencontainers.image.url="https://github.com/isgallagher/forge-guardrails" \
     org.opencontainers.image.source="https://github.com/isgallagher/forge-guardrails" \
     org.opencontainers.image.vendor="Ian Gallagher" \

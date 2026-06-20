@@ -22,11 +22,18 @@ from forge.proxy.server import HTTPServer
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _mock_client(response):
+def _mock_client(response, streaming=False):
     """Create a mock LLMClient that returns the given response."""
+    from forge.clients.base import ChunkType, StreamChunk
+
     client = AsyncMock()
     client.api_format = "ollama"
     client.send_http = AsyncMock(return_value=response)
+
+    async def fake_stream(*args, **kwargs):
+        yield StreamChunk(type=ChunkType.FINAL, response=response)
+
+    client.send_http_stream = fake_stream
     return client
 
 
@@ -109,7 +116,7 @@ class TestHandleChatCompletionsAnthropicBackend:
 
     @pytest.mark.asyncio
     async def test_streaming_tool_call_anthropic_sse(self, ctx):
-        client = _mock_client([ToolCall(tool="get_weather", args={"city": "Paris"})])
+        client = _mock_client([ToolCall(tool="get_weather", args={"city": "Paris"})], streaming=True)
         body = {
             "model": "forge",
             "messages": [{"role": "user", "content": "weather"}],

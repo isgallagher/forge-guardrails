@@ -12,11 +12,18 @@ from forge.proxy.handler import handle_chat_completions, _extract_tool_specs
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _mock_client(response):
+def _mock_client(response, streaming=False):
     """Create a mock LLMClient that returns the given response."""
+    from forge.clients.base import ChunkType, StreamChunk
+
     client = AsyncMock()
     client.api_format = "ollama"
     client.send_http = AsyncMock(return_value=response)
+
+    async def fake_stream(*args, **kwargs):
+        yield StreamChunk(type=ChunkType.FINAL, response=response)
+
+    client.send_http_stream = lambda *a, **k: fake_stream(*a, **k)
     return client
 
 
@@ -129,7 +136,7 @@ class TestWithTools:
     @pytest.mark.asyncio
     async def test_tool_call_stream(self):
         """Valid tool call returns SSE events."""
-        client = _mock_client([ToolCall(tool="search", args={})])
+        client = _mock_client([ToolCall(tool="search", args={})], streaming=True)
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")], stream=True),
             client, _context_manager(),
@@ -152,7 +159,7 @@ class TestWithTools:
     @pytest.mark.asyncio
     async def test_respond_stripped_in_stream(self):
         """Respond call in stream mode returns text SSE events."""
-        client = _mock_client([ToolCall(tool="respond", args={"message": "Hi!"})])
+        client = _mock_client([ToolCall(tool="respond", args={"message": "Hi!"})], streaming=True)
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")], stream=True),
             client, _context_manager(),
@@ -193,10 +200,16 @@ class TestErrorPaths:
     @pytest.mark.asyncio
     async def test_retries_exhausted_returns_text(self):
         """When retries are exhausted, last text is returned to client."""
+        from forge.clients.base import ChunkType, StreamChunk
+
+        async def fake_stream(*args, **kwargs):
+            yield StreamChunk(type=ChunkType.FINAL, response=TextResponse(content="I can't do that"))
+
         # Model always returns text — will exhaust retries
         client = AsyncMock()
         client.api_format = "ollama"
         client.send_http = AsyncMock(return_value=TextResponse(content="I can't do that"))
+        client.send_http_stream = fake_stream
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")]),
             client, _context_manager(), max_retries=1,
@@ -208,9 +221,14 @@ class TestErrorPaths:
     @pytest.mark.asyncio
     async def test_retries_exhausted_stream(self):
         """Retries exhausted in stream mode returns text SSE events."""
+        from forge.clients.base import ChunkType, StreamChunk
+
+        async def fake_stream(*args, **kwargs):
+            yield StreamChunk(type=ChunkType.FINAL, response=TextResponse(content="nope"))
+
         client = AsyncMock()
         client.api_format = "ollama"
-        client.send_http = AsyncMock(return_value=TextResponse(content="nope"))
+        client.send_http_stream = fake_stream
         result = await handle_chat_completions(
             _body(tools=[_tool_def("search")], stream=True),
             client, _context_manager(), max_retries=1,

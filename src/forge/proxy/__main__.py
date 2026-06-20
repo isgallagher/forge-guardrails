@@ -10,7 +10,6 @@ import sys
 import time
 
 from forge.proxy.proxy import ProxyServer
-from forge.server import BudgetMode
 
 
 def _load_env_file(path: str) -> None:
@@ -57,31 +56,18 @@ def main() -> None:
         help="Path to .env file to load (env: ENV_FILE). Uses setdefault() so existing vars win.",
     )
 
-    # Mode selection
+    # Backend connection
     parser.add_argument(
         "--backend-url",
         default=os.environ.get("BACKEND_URL"),
-        help="URL of externally managed backend (external mode), or Anthropic-compatible endpoint with --backend anthropic. Env: BACKEND_URL",
+        help="URL of the backend to proxy (e.g. http://localhost:8080/v1). Env: BACKEND_URL",
     )
     parser.add_argument(
-        "--backend",
-        choices=["llamaserver", "llamafile", "ollama", "anthropic"],
-        default=os.environ.get("BACKEND"),
-        help="Backend type (managed mode). Env: BACKEND",
+        "--backend-type",
+        choices=["anthropic", "openai"],
+        default=os.environ.get("BACKEND_TYPE", "anthropic"),
+        help="Backend API format (default: anthropic). Env: BACKEND_TYPE",
     )
-
-    # Managed mode options
-    parser.add_argument("--model", default=os.environ.get("MODEL"), help="Model name (required for ollama). Env: MODEL")
-    parser.add_argument("--gguf", default=os.environ.get("GGUF"), help="Path to GGUF file (llamaserver/llamafile). Env: GGUF")
-    parser.add_argument("--backend-port", type=int, default=int(os.environ.get("BACKEND_PORT", "8080")), help="Backend port (default: 8080). Env: BACKEND_PORT")
-    parser.add_argument(
-        "--budget-mode",
-        choices=["backend", "manual", "forge-full", "forge-fast"],
-        default=os.environ.get("BUDGET_MODE", "backend"),
-        help="Context budget mode (default: backend). Env: BUDGET_MODE",
-    )
-    parser.add_argument("--budget-tokens", type=int, default=os.environ.get("BUDGET_TOKENS", None), help="Manual token budget. Env: BUDGET_TOKENS")
-    parser.add_argument("--extra-flags", nargs="*", default=os.environ.get("EXTRA_FLAGS").split() if os.environ.get("EXTRA_FLAGS") else None, help="Additional backend CLI flags. Env: EXTRA_FLAGS")
 
     # Proxy options
     parser.add_argument("--host", default=os.environ.get("HOST", "127.0.0.1"), help="Proxy listen host (default: 127.0.0.1). Env: HOST")
@@ -104,10 +90,6 @@ def main() -> None:
     )
 
     args = parser.parse_args()
-
-    # Validate backend mode (allow both None for env-var-only usage)
-    if not args.backend_url and not args.backend:
-        parser.error("Provide either --backend-url / BACKEND_URL or --backend / BACKEND")
 
     # Logging — verbose overrides LOG_LEVEL
     if args.verbose:
@@ -133,13 +115,7 @@ def main() -> None:
 
     proxy = ProxyServer(
         backend_url=args.backend_url,
-        backend=args.backend,
-        model=args.model,
-        gguf=args.gguf,
-        backend_port=args.backend_port,
-        budget_mode=BudgetMode(args.budget_mode),
-        budget_tokens=args.budget_tokens,
-        extra_flags=args.extra_flags,
+        backend_type=args.backend_type,
         host=args.host,
         port=args.port,
         serialize=serialize,

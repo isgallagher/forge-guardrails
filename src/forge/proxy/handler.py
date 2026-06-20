@@ -276,6 +276,7 @@ async def handle_chat_completions(
             validator=validator,
             error_tracker=error_tracker,
             tool_specs=tool_specs,
+            stream=True,
             sampling=sampling,
             max_tokens=max_tokens,
         )

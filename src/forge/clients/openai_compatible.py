@@ -34,16 +34,20 @@ class OpenAICompatibleClient(LLMClient):
         base_url: str,
         api_key: str | None = None,
         timeout: float = 120.0,
+        max_tokens: int = 8192,
     ) -> None:
         """
         Args:
-            base_url: Backend URL (e.g. http://localhost:8080/v1).
+            base_url: Backend URL (e.g. http://localhost:8080).
             api_key: Optional API key for backends that require auth.
             timeout: Request timeout in seconds.
+            max_tokens: Default response token ceiling when the caller
+                does not provide one. Prevents unbounded generation.
         """
         self.backend_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
+        self.max_tokens = max_tokens
         self._client = httpx.AsyncClient(
             base_url=base_url,
             headers=self._headers(api_key),
@@ -91,8 +95,10 @@ class OpenAICompatibleClient(LLMClient):
                     body[key] = sampling[key]
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        elif self.max_tokens:
+            body["max_tokens"] = self.max_tokens
 
-        resp = await self._client.post("/chat/completions", json=body)
+        resp = await self._client.post("/v1/chat/completions", json=body)
         resp.raise_for_status()
         data = resp.json()
         return self._parse_response(data)
@@ -109,6 +115,9 @@ class OpenAICompatibleClient(LLMClient):
             "messages": messages,
             "stream": True,
         }
+        model_kwarg = sampling.get("model") if sampling else None
+        if model_kwarg:
+            body["model"] = model_kwarg
         if tools:
             body["tools"] = [
                 {
@@ -127,9 +136,16 @@ class OpenAICompatibleClient(LLMClient):
                     body[key] = sampling[key]
         if max_tokens is not None:
             body["max_tokens"] = max_tokens
+        elif self.max_tokens:
+            body["max_tokens"] = self.max_tokens
 
-        async with self._client.stream("POST", "/chat/completions", json=body) as resp:
+        async with self._client.stream("POST", "/v1/chat/completions", json=body) as resp:
             resp.raise_for_status()
+            # Accumulate for final response
+            accumulated_text = ""
+            tool_blocks: list[dict[str, str]] = []  # [{name, args}, ...]
+            current_tool_idx: int = -1
+
             async for line in resp.aiter_lines():
                 line = line.strip()
                 if not line or not line.startswith("data: "):
@@ -141,14 +157,69 @@ class OpenAICompatibleClient(LLMClient):
                     data = json.loads(payload)
                 except json.JSONDecodeError:
                     continue
-                chunk = self._parse_stream_chunk(data)
-                if chunk is not None:
-                    yield chunk
+
+                # Track usage
+                usage_data = data.get("usage")
+                if usage_data:
+                    self.last_usage[str(self._slot_id)] = TokenUsage(
+                        prompt_tokens=usage_data.get("prompt_tokens", 0),
+                        completion_tokens=usage_data.get("completion_tokens", 0),
+                        total_tokens=usage_data.get("total_tokens", 0),
+                    )
+
+                choices = data.get("choices", [])
+                if not choices:
+                    continue
+
+                choice = choices[0]
+                finish = choice.get("finish_reason")
+                delta = choice.get("delta", {})
+
+                if finish:
+                    # Build final response from accumulated data
+                    if tool_blocks:
+                        final: LLMResponse = [
+                            ToolCall(
+                                tool=tb["name"],
+                                args=json.loads(tb["args"]) if tb["args"] else {},
+                            )
+                            for tb in tool_blocks
+                        ]
+                    else:
+                        final = TextResponse(content=accumulated_text)
+                    yield StreamChunk(type=ChunkType.FINAL, response=final)
+                    continue
+
+                content = delta.get("content")
+                tool_calls = delta.get("tool_calls")
+
+                if tool_calls:
+                    tc = tool_calls[0]
+                    func = tc.get("function", {})
+                    idx = tc.get("index", len(tool_blocks))
+                    name = func.get("name", "")
+                    args_str = func.get("arguments", "")
+
+                    # Track new tool block
+                    if idx >= len(tool_blocks):
+                        tool_blocks.append({"name": name, "args": args_str})
+                        current_tool_idx = idx
+                    elif idx < len(tool_blocks):
+                        tool_blocks[idx]["args"] += args_str
+                        current_tool_idx = idx
+
+                    yield StreamChunk(
+                        type=ChunkType.TOOL_CALL_DELTA,
+                        content=f"{name}({args_str})",
+                    )
+                elif content:
+                    accumulated_text += content
+                    yield StreamChunk(type=ChunkType.TEXT_DELTA, content=content)
 
     async def get_context_length(self) -> int | None:
         """Query the backend for its configured context window size."""
         try:
-            resp = await self._client.get("/models")
+            resp = await self._client.get("/v1/models")
             resp.raise_for_status()
             return None
         except Exception:

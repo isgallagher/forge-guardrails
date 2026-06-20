@@ -27,13 +27,30 @@ from forge.proxy.server import HTTPServer
 # ── Helpers ──────────────────────────────────────────────────
 
 
-def _mock_client(response):
+def _mock_client(response, streaming=False):
+    from forge.clients.base import ChunkType, StreamChunk
+
     client = AsyncMock()
     client.api_format = "openai"
-    client.backend_url = "http://localhost:8080/v1"
+    client.backend_url = "http://localhost:8080"
     client._models_format = "openai"
     client.send_http = AsyncMock(return_value=response)
+
+    async def fake_stream(*args, **kwargs):
+        yield StreamChunk(type=ChunkType.FINAL, response=response)
+
+    client.send_http_stream = fake_stream
     return client
+
+
+def _make_fake_stream(response):
+    """Create a fake streaming generator that yields a single FINAL chunk."""
+    from forge.clients.base import ChunkType, StreamChunk
+
+    async def fake_stream(*args, **kwargs):
+        yield StreamChunk(type=ChunkType.FINAL, response=response)
+
+    return fake_stream
 
 
 def _ctx():
@@ -143,7 +160,7 @@ class TestOpenaiPassThrough:
     @pytest.mark.asyncio
     async def test_with_tools_stream_no_pass_through(self):
         """Streaming with tools goes through guardrails, not pass-through."""
-        client = _mock_client([ToolCall(tool="search", args={"q": "x"})])
+        client = _mock_client([ToolCall(tool="search", args={"q": "x"})], streaming=True)
         result = await handle_chat_completions(
             _openai_body(tools=[_tool_def("search")], stream=True),
             client,
@@ -241,7 +258,7 @@ class TestAnthropicPassThrough:
     @pytest.mark.asyncio
     async def test_with_tools_stream_no_pass_through(self):
         """Streaming with tools goes through guardrails."""
-        client = _mock_client([ToolCall(tool="get_weather", args={"city": "Paris"})])
+        client = _mock_client([ToolCall(tool="get_weather", args={"city": "Paris"})], streaming=True)
         body = _anthropic_body(
             tools=[{
                 "name": "get_weather",
@@ -289,9 +306,10 @@ class TestServerPassThrough:
         async def _make(supports_anthropic=False, supports_openai=False):
             client = AsyncMock()
             client.api_format = "openai"
-            client.backend_url = "http://localhost:8080/v1"
+            client.backend_url = "http://localhost:8080"
             client._models_format = "openai"
             client.send_http = AsyncMock(return_value=TextResponse(content="ok"))
+            client.send_http_stream = _make_fake_stream(TextResponse(content="ok"))
             client.send_raw = AsyncMock(return_value={
                 "id": "msg_test",
                 "type": "message",
@@ -408,7 +426,15 @@ class TestServerPassThrough:
             supports_openai=True,
         )
         # Override send to return a tool call for the tools path
-        client.send_http = AsyncMock(return_value=[ToolCall(tool="search", args={"q": "test"})])
+        from forge.clients.base import ChunkType, StreamChunk
+
+        tool_response = [ToolCall(tool="search", args={"q": "test"})]
+
+        async def fake_stream(*args, **kwargs):
+            yield StreamChunk(type=ChunkType.FINAL, response=tool_response)
+
+        client.send_http = AsyncMock(return_value=tool_response)
+        client.send_http_stream = fake_stream
 
         reader, writer = await asyncio.open_connection("127.0.0.1", port)
         try:

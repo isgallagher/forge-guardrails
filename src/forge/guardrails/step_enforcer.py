@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from forge.core.steps import StepTracker
-from forge.core.workflow import ToolCall, ToolDef
+from forge.core.workflow import ToolCall
 from forge.guardrails.nudge import Nudge
 from forge.prompts.nudges import prerequisite_nudge, step_nudge
 
