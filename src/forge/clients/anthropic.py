@@ -53,7 +53,7 @@ class AnthropicClient:
         # The Anthropic SDK manages sampling internally.
         if recommended_sampling:
             log.debug("AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed.")
-        self.last_usage: dict[str, int] | None = None
+        self.last_usage: dict[int, TokenUsage] | None = None
         self._slot_id: int = 0
 
         kwargs: dict[str, Any] = {
@@ -288,10 +288,14 @@ class AnthropicClient:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as exc:
             raise BackendError(getattr(exc, "status_code", 0), str(exc)) from exc
-        self.last_usage = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-        }
+        if response.usage is not None:
+            self.last_usage = {
+                self._slot_id: TokenUsage(
+                    prompt_tokens=response.usage.input_tokens,
+                    completion_tokens=response.usage.output_tokens,
+                    total_tokens=response.usage.input_tokens + response.usage.output_tokens,
+                )
+            }
         return self._parse_response(response)
 
     async def send_stream(
@@ -356,10 +360,14 @@ class AnthropicClient:
                         yield StreamChunk(type=ChunkType.FINAL, response=final)
                 # Grab usage from the final accumulated message.
                 final_message = await stream.get_final_message()
-                self.last_usage = {
-                    "input_tokens": final_message.usage.input_tokens,
-                    "output_tokens": final_message.usage.output_tokens,
-                }
+                if final_message.usage is not None:
+                    self.last_usage = {
+                        self._slot_id: TokenUsage(
+                            prompt_tokens=final_message.usage.input_tokens,
+                            completion_tokens=final_message.usage.output_tokens,
+                            total_tokens=final_message.usage.input_tokens + final_message.usage.output_tokens,
+                        )
+                    }
         except anthropic.APIError as exc:
             raise BackendError(getattr(exc, "status_code", 0), str(exc)) from exc
 

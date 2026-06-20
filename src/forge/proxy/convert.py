@@ -232,20 +232,21 @@ def tool_calls_to_sse_events(
         )
 
     # Final chunk with finish_reason
-    events.append(
-        {
-            "id": cmpl_id,
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "tool_calls",
-                }
-            ],
-        }
-    )
+    final = {
+        "id": cmpl_id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {},
+                "finish_reason": "tool_calls",
+            }
+        ],
+    }
+    if usage:
+        final["usage"] = usage
+    events.append(final)
 
     # Append usage chunk if available
     if usage:
@@ -298,20 +299,21 @@ def text_to_sse_events(
         )
 
     # Final chunk
-    events.append(
-        {
-            "id": cmpl_id,
-            "object": "chat.completion.chunk",
-            "model": model,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {},
-                    "finish_reason": "stop",
-                }
-            ],
-        }
-    )
+    final = {
+        "id": cmpl_id,
+        "object": "chat.completion.chunk",
+        "model": model,
+        "choices": [
+            {
+                "index": 0,
+                "delta": {},
+                "finish_reason": "stop",
+            }
+        ],
+    }
+    if usage:
+        final["usage"] = usage
+    events.append(final)
 
     # Append usage chunk if available
     if usage:
@@ -590,6 +592,15 @@ def openai_to_anthropic_sse(
     accumulated_text = ""
     next_index = 0  # Track next available content block index
     text_started = False  # Whether content_block_start for text has been emitted
+
+    # Build Anthropic usage from OpenAI usage dict
+    if usage:
+        anthropic_usage = {
+            "input_tokens": usage.get("prompt_tokens", 0),
+            "output_tokens": usage.get("completion_tokens", 0),
+        }
+    else:
+        anthropic_usage = {"input_tokens": 0, "output_tokens": 0}
 
     for event in openai_events:
         choices = event.get("choices", [])
