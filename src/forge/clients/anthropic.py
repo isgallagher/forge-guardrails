@@ -53,8 +53,9 @@ class AnthropicClient:
         # The Anthropic SDK manages sampling internally.
         if recommended_sampling:
             log.debug("AnthropicClient ignores recommended_sampling=True — no sampling kwargs are exposed.")
-        self.last_usage: dict[str, TokenUsage] = {}
+        self.last_usage: dict[str, TokenUsage | dict[str, Any]] = {}
         self._slot_id: int = 0
+        self._streaming_usage: dict[str, Any] = {}
 
         kwargs: dict[str, Any] = {
             "api_key": api_key,
@@ -495,7 +496,12 @@ class AnthropicClient:
 
                 event_type = event.get("type")
 
-                if event_type == "content_block_start":
+                if event_type == "message_start":
+                    msg_usage = event.get("message", {}).get("usage", {})
+                    if msg_usage:
+                        self._streaming_usage = dict(msg_usage)
+
+                elif event_type == "content_block_start":
                     cb = event.get("content_block", {})
                     if cb.get("type") == "tool_use":
                         tool_blocks.append({
@@ -527,11 +533,8 @@ class AnthropicClient:
                 elif event_type == "message_delta":
                     raw_usage = event.get("usage", {})
                     if raw_usage:
-                        self.last_usage[str(self._slot_id)] = TokenUsage(
-                            prompt_tokens=raw_usage.get("input_tokens", 0),
-                            completion_tokens=raw_usage.get("output_tokens", 0),
-                            total_tokens=raw_usage.get("input_tokens", 0) + raw_usage.get("output_tokens", 0),
-                        )
+                        self._streaming_usage["output_tokens"] = raw_usage.get("output_tokens", 0)
+                        self.last_usage[str(self._slot_id)] = dict(self._streaming_usage)
 
                 elif event_type == "message_stop":
                     if tool_blocks:
@@ -581,10 +584,7 @@ class AnthropicClient:
             "content": content_blocks,
             "stop_reason": response.stop_reason,
             "stop_sequence": response.stop_sequence,
-            "usage": {
-                "input_tokens": response.usage.input_tokens,
-                "output_tokens": response.usage.output_tokens,
-            },
+            "usage": response.usage.model_dump(),
         }
 
     async def send_raw_stream(
@@ -685,10 +685,7 @@ class AnthropicClient:
                             "stop_reason": final_msg.stop_reason,
                             "id": message_id,
                             "model": model_name,
-                            "usage": {
-                                "input_tokens": final_msg.usage.input_tokens,
-                                "output_tokens": final_msg.usage.output_tokens,
-                            },
+                            "usage": final_msg.usage.model_dump(),
                         }
 
         except anthropic.APIError as exc:

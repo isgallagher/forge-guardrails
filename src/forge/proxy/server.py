@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from forge.clients.base import LLMClient
+from forge.errors import BackendError
 from forge.context.manager import ContextManager
 from forge.proxy.convert import (
     ollama_models_to_anthropic,
@@ -571,7 +572,10 @@ class HTTPServer:
                 backend_supports_anthropic=self._capabilities.supports_anthropic if self._capabilities else False,
             )
         except Exception as exc:
-            logger.exception("Handler error")
+            if isinstance(exc, BackendError) and exc.status_code == 404:
+                logger.warning("Backend 404: %s", exc)
+            else:
+                logger.exception("Handler error")
             return exc
 
     async def _await_with_disconnect(
@@ -646,7 +650,10 @@ class HTTPServer:
                 backend_supports_openai=self._capabilities.supports_openai if self._capabilities else False,
             )
         except Exception as exc:
-            logger.exception("Handler error")
+            if isinstance(exc, BackendError) and exc.status_code == 404:
+                logger.warning("Backend 404: %s", exc)
+            else:
+                logger.exception("Handler error")
             return exc
 
     async def _send_json(
