@@ -62,6 +62,8 @@ def _get_usage(client: LLMClient) -> dict[str, Any] | None:
             "completion_tokens": usage.completion_tokens,
             "total_tokens": usage.total_tokens,
         }
+    if isinstance(usage, dict):
+        return usage
     return None
 
 

@@ -604,8 +604,12 @@ def openai_to_anthropic_sse(
     next_index = 0  # Track next available content block index
     text_started = False  # Whether content_block_start for text has been emitted
 
-    # Build Anthropic usage from OpenAI usage dict
-    if usage:
+    # Build Anthropic usage — detect format
+    if usage and "input_tokens" in usage:
+        # Already Anthropic format (raw from streaming) — use as-is
+        anthropic_usage = dict(usage)
+    elif usage:
+        # OpenAI format (from TokenUsage) — convert
         anthropic_usage = {
             "input_tokens": usage.get("prompt_tokens", 0),
             "output_tokens": usage.get("completion_tokens", 0),
@@ -696,8 +700,17 @@ def openai_to_anthropic_sse(
 
                 events.append(
                     {
+                        "type": "message_delta",
+                        "delta": {
+                            "type": "message_delta",
+                            "stop_reason": _STOP_REASON_MAP_REV.get(finish_reason, "end_turn"),
+                        },
+                        "usage": anthropic_usage,
+                    }
+                )
+                events.append(
+                    {
                         "type": "message_stop",
-                        "stop_reason": _STOP_REASON_MAP_REV.get(finish_reason, "end_turn"),
                     }
                 )
 

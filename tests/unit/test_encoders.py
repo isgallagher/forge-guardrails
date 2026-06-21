@@ -338,9 +338,9 @@ class TestOpenaiToAnthropicSseEdgeCases:
             {"id": "c1", "choices": [{"delta": {"content": "x"}, "finish_reason": "content_filter"}]},
         ]
         result = openai_to_anthropic_sse(events, "model")
-        message_stops = [e for e in result if e.get("type") == "message_stop"]
-        # The content_filter maps to stop_sequence
-        assert any(e.get("stop_reason") == "stop_sequence" for e in message_stops)
+        message_deltas = [e for e in result if e.get("type") == "message_delta"]
+        # The content_filter maps to stop_sequence in message_delta
+        assert any(e.get("delta", {}).get("stop_reason") == "stop_sequence" for e in message_deltas)
 
     def test_multiple_tool_calls_in_stream(self) -> None:
         events = [

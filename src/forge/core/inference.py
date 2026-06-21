@@ -33,9 +33,15 @@ def _sync_token_count(client: LLMClient, context_manager: ContextManager) -> Non
     if not isinstance(last_usage, dict):
         return
     slot_id = getattr(client, "_slot_id", None) or 0
-    usage: TokenUsage | None = last_usage.get(slot_id) or last_usage.get(str(slot_id))
-    if usage is not None:
+    usage: TokenUsage | dict[str, Any] | None = last_usage.get(slot_id) or last_usage.get(str(slot_id))
+    if usage is None:
+        return
+    if isinstance(usage, TokenUsage):
         context_manager.update_token_count(usage.total_tokens)
+    elif isinstance(usage, dict):
+        # Raw Anthropic usage dict from streaming
+        total = usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+        context_manager.update_token_count(total)
 
 
 @dataclass
